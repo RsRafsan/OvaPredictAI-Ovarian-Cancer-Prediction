@@ -510,7 +510,7 @@ FALLBACK_FEATURE_NAMES = [
 # -----------------------------
 # Tabs
 # -----------------------------
-tabs = st.tabs(["Single Prediction", "Batch Prediction", "Feature Reference"])
+tabs = st.tabs(["Single Prediction", "Batch Prediction", "Clinical & Interpretive"])
 
 # -----------------------------
 # Single Prediction
@@ -894,6 +894,7 @@ with tabs[2]:
             st.markdown(card_html, unsafe_allow_html=True)
 
         st.write("---")
+
 
 
 
