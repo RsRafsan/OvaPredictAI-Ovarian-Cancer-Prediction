@@ -20,16 +20,16 @@ VALIDATION_FEATURES = {
     },
     "Menopause": {
         "description": "Hormone changes after menopause affect marker interpretation; postmenopausal people have higher risk.",
-        "role": "Hormonal Context",
+        "role": "Hormonal",
         "link": "https://my.clevelandclinic.org/health/diseases/21841-menopause"
     },
     "HE4": {
-        "description": "Blood protein used to detect or monitor ovarian cancer; high levels may suggest active disease.",
+        "description": "HE4 is a blood protein, used to detect or monitor ovarian cancer; high levels may suggest active disease.",
         "role": "Cancer Marker",
         "link": "https://www.mayocliniclabs.com/test-catalog/overview/62137#clinical-and-interpretive"
     },
     "CA125": {
-        "description": "Tumor antigen for ovarian cancer; high values may indicate tumor activity, low values are reassuring.",
+        "description": "CA125 is a tumor marker associated with ovarian cancer; elevated levels may suggest active disease; lower levels are generally reassuring.",
         "role": "Cancer Marker",
         "link": "https://www.mayocliniclabs.com/test-catalog/overview/9289#clinical-and-interpretive"
     },
@@ -39,12 +39,12 @@ VALIDATION_FEATURES = {
         "link": "https://www.mayocliniclabs.com/test-catalog/overview/8521#clinical-and-interpretive"
     },
     "CA72-4": {
-        "description": "Adjunct tumor marker; high levels can support cancer diagnosis but not definitive alone.",
-        "role": "Adjunct Marker",
+        "description": "CA72-4 is a adjunct cancer marker; high levels can support cancer diagnosis but not definitive alone.",
+        "role": "Cancer Marker",
         "link": "https://mefact.org/blood-test-ca-72-4-what-you-need-to-know-m164.html"
     },
     "PCT": {
-        "description": "Rises in bacterial infection; high values suggest bacterial cause, low values reduce likelihood.",
+        "description": "Procalcitonin rises in bacterial infection; high values suggest bacterial cause, low values reduce likelihood.",
         "role": "Inflammation Marker",
         "link": "https://www.mayocliniclabs.com/test-catalog/overview/602598#clinical-and-interpretive"
     },
@@ -89,8 +89,8 @@ VALIDATION_FEATURES = {
         "link": "https://www.mayocliniclabs.com/test-catalog/overview/8360#clinical-and-interpretive"
     },
     "ALP": {
-        "description": "Liver/bone enzyme; high ALP suggests bile obstruction or bone disease.",
-        "role": "Liver/Bone Function",
+        "description": "Aspartate Aminotransferase; Liver/bone enzyme; high ALP suggests bile obstruction or bone disease.",
+        "role": "Liver Function",
         "link": "https://www.mayocliniclabs.com/test-catalog/overview/8340#clinical-and-interpretive"
     },
     "TBIL": {
@@ -134,7 +134,7 @@ VALIDATION_FEATURES = {
         "link": "https://www.mayocliniclabs.com/test-catalog/overview/601514#clinical-and-interpretive"
     },
     "GLU.": {
-        "description": "Blood sugar level; high suggests diabetes/stress, low indicates hypoglycemia.",
+        "description": "Glucose shows blood sugar level; high suggests diabetes/stress, low indicates hypoglycemia.",
         "role": "Metabolic Marker",
         "link": "https://www.mayocliniclabs.com/test-catalog/overview/89115#clinical-and-interpretive"
     }
@@ -215,9 +215,9 @@ def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold: fl
             table_data.append({
                 "Feature": feat,
                 "Value": f"{val:.2f}",
-                "Risk": "High Risk",
+                "Risk": "High",
                 "Role": feature_info["role"],
-                "Facts": feature_info["description"]
+                "Interpretation": feature_info["description"]
                 
             })
 
@@ -894,6 +894,7 @@ with tabs[2]:
             st.markdown(card_html, unsafe_allow_html=True)
 
         st.write("---")
+
 
 
 
