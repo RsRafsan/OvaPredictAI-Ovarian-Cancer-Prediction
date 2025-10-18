@@ -315,7 +315,7 @@ def generate_pdf_report(user_vals, risk_label, percent, df_table=None):
     if df_table is not None and not df_table.empty:
         pdf.set_font("Arial", "B", 12)
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(0, 8, "3. High-Risk Indicators & Clinical Facts", ln=True)
+        pdf.cell(0, 8, "3. High-Risk Indicators & Clinical Interpretation", ln=True)
         pdf.ln(3)
        
         # More compact column widths for risk indicators table
@@ -323,7 +323,7 @@ def generate_pdf_report(user_vals, risk_label, percent, df_table=None):
        
         # Table header - smaller font
         pdf.set_font("Arial", "B", 7)
-        headers = ["Feature", "Value", "Risk", "Role", "Clinical Facts"]
+        headers = ["Feature", "Value", "Risk", "Role", "Clinical Interpretation"]
        
         for i, header in enumerate(headers):
             pdf.cell(col_widths[i], 6, header, border=1)
@@ -349,7 +349,7 @@ def generate_pdf_report(user_vals, risk_label, percent, df_table=None):
             pdf.cell(col_widths[3], 6, role, border=1)
            
             # Facts - multi_cell for wrapping with proper width
-            facts = str(row["Facts"])
+            facts = str(row["Interpretation"])
             # Calculate height needed for this cell
             text_width = col_widths[4] - 2  # Account for borders
             text_height = 3.0  # Smaller base height
@@ -894,6 +894,7 @@ with tabs[2]:
             st.markdown(card_html, unsafe_allow_html=True)
 
         st.write("---")
+
 
 
 
