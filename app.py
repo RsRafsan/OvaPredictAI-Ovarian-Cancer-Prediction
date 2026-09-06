@@ -440,6 +440,54 @@ def get_feature_display_name(short_name):
    
     return feature_mapping.get(short_name, short_name)
 
+# ============================================================
+# NEW: Wrapper for Federated SVM (to support predict_proba)
+# ============================================================
+class FederatedSVMWrapper:
+    """
+    A wrapper to adapt the custom federated SVM dictionary
+    to the standard scikit-learn 'predict_proba' interface.
+    """
+    def __init__(self, model_dict):
+        self.rff_mapper = model_dict['rff_mapper']
+        self.global_w = model_dict['global_w']
+        self.global_b = model_dict['global_b']
+        self.margin_mean = model_dict['training_margin_mean']
+        self.margin_std = model_dict['training_margin_std']
+        
+        # Required by the Streamlit app
+        self.classes_ = np.array([0, 1])  # 0 = Low Risk, 1 = High Risk
+        
+        # Extract feature names from the dict, if present
+        if 'selected_features' in model_dict and model_dict['selected_features']:
+            self.feature_names_in_ = np.array(model_dict['selected_features'])
+        else:
+            # Fallback to the standard list (will be overridden by app's fallback)
+            self.feature_names_in_ = None
+        
+    def predict_proba(self, X):
+        """
+        X should be a 2D numpy array or DataFrame (already scaled).
+        Returns probabilities: [P(Class 0), P(Class 1)]
+        """
+        # 1. Apply Random Fourier Features to scale the inputs
+        X_rff = self.rff_mapper.transform(X)
+        
+        # 2. Calculate raw decision margins (w * x + b)
+        raw_margins = np.dot(X_rff, self.global_w) + self.global_b
+        raw_margins = raw_margins.flatten()  # Ensure it's 1D
+        
+        # 3. Standardize margins using training statistics (for better calibration)
+        std_margins = (raw_margins - self.margin_mean) / self.margin_std
+        
+        # 4. Convert standardized margin to probability using a sigmoid
+        #    (This gives us the probability of Class 1 = High Risk)
+        prob_high = 1 / (1 + np.exp(-std_margins))
+        prob_low = 1 - prob_high
+        
+        # Return shape (n_samples, 2) as expected by the app
+        return np.column_stack([prob_low, prob_high])
+
 # -----------------------------
 # UI Setup
 # -----------------------------
@@ -463,9 +511,20 @@ with st.sidebar:
 
     try:
         model_obj = load_model(model_path)
+        # ----- MODIFIED LOADING LOGIC -----
+        # 1. If it's a list, take the first element (old XGBoost)
         if isinstance(model_obj, list):
             st.warning("Model file contained a list. Using the first element.")
             model_obj = model_obj[0]
+        # 2. If it's a dict with the Federated SVM keys, wrap it
+        elif isinstance(model_obj, dict) and 'rff_mapper' in model_obj and 'global_w' in model_obj:
+            st.info("Detected custom Federated SVM. Wrapping it for compatibility...")
+            model_obj = FederatedSVMWrapper(model_obj)
+            st.success("Custom Federated SVM loaded successfully!")
+        # 3. Otherwise, keep as-is (might be a standard sklearn model)
+        else:
+            st.info("Model loaded as standard object.")
+        # ----------------------------------
         st.success(f"Loaded model: {os.path.basename(model_path)}")
     except Exception as e:
         model_obj = None
@@ -557,14 +616,29 @@ with tabs[0]:
         if st.button("Predict", type="primary"):
             try:
                 clean_vals = {k: float(v) for k, v in user_vals.items()}
-                input_df = pd.DataFrame([clean_vals], columns=feature_names)
+                
+                # ----- ENHANCED FEATURE ALIGNMENT -----
+                # Get the scaler's expected feature order (if available)
+                if scaler and hasattr(scaler, 'feature_names_in_'):
+                    scaler_features = list(scaler.feature_names_in_)
+                else:
+                    scaler_features = feature_names
+
+                # Build the DataFrame with the scaler's feature order
+                input_df = pd.DataFrame([clean_vals], columns=scaler_features)
 
                 if scaler:
                     X_scaled = scaler.transform(input_df)
-                    X_df = pd.DataFrame(X_scaled, columns=feature_names, index=[0])
+                    # Now align the scaled result back to the model's feature order
+                    X_df = pd.DataFrame(X_scaled, columns=scaler_features, index=[0])
+                    
+                    # If model expects a different order, reorder here:
+                    if list(X_df.columns) != list(feature_names):
+                        X_df = X_df[feature_names]
                 else:
                     st.warning("Scaler not loaded. Using raw values.")
                     X_df = input_df
+                # ---------------------------------------
 
                 proba = model_obj.predict_proba(X_df)[0]
                 classes = getattr(model_obj, "classes_", np.array([0, 1]))
@@ -651,10 +725,24 @@ with tabs[1]:
                     if scaler is None:
                         st.error("Scaler not loaded! Upload scaler_hybrid.pkl")
                     else:
-                        X_scaled = scaler.transform(df[feature_names])
-                        df_scaled = pd.DataFrame(X_scaled, columns=feature_names, index=df.index)
+                        # ----- ENHANCED BATCH ALIGNMENT -----
+                        # Get scaler feature order
+                        if hasattr(scaler, 'feature_names_in_'):
+                            scaler_features = list(scaler.feature_names_in_)
+                        else:
+                            scaler_features = feature_names
 
-                        proba = model_obj.predict_proba(df_scaled)
+                        # Ensure the batch CSV has all required columns in the right order
+                        X_df = df[scaler_features].copy()
+                        X_scaled = scaler.transform(X_df)
+                        X_scaled_df = pd.DataFrame(X_scaled, columns=scaler_features, index=df.index)
+
+                        # Reorder to model's feature order if needed
+                        if list(X_scaled_df.columns) != list(feature_names):
+                            X_scaled_df = X_scaled_df[feature_names]
+                        # ------------------------------------
+
+                        proba = model_obj.predict_proba(X_scaled_df)
                         classes = getattr(model_obj, "classes_", np.array([0, 1]))
                         idx_high = int(np.where(classes == 1)[0][0]) if 1 in classes else 1
                         p_high = proba[:, idx_high]
@@ -676,11 +764,9 @@ with tabs[1]:
                 except Exception as e:
                     st.error(f"Prediction failed. Error: {e}")
 
-
 # -----------------------------
-# Tab 3: Clinical Interpretation (color-tinted grouped cards with expanded Mayo-style explanations)
+# Tab 3: Clinical Interpretation (unchanged)
 # -----------------------------
-# assume you have: tab1, tab2, tab3 = st.tabs([...])
 with tabs[2]:
     st.header("Clinical Interpretation Reference")
 
@@ -732,9 +818,7 @@ with tabs[2]:
         }
     }
 
-
     # Expanded 2-3 paragraph explanations (Mayo-style, simplified) for each feature.
-    # We'll map brief expanded_texts derived from the Mayo-style summaries you approved.
     expanded_texts = {
         "Age": (
             "Age itself is not a lab test but a clinical factor; older age raises the chance of ovarian cancer. "
@@ -861,9 +945,7 @@ with tabs[2]:
         )
     }
     
-
-        # render groups with color-tinted cards
-        # render groups with color-tinted cards
+    # render groups with color-tinted cards
     for cat_name, cat_info in categories.items():
         st.subheader(cat_name)
         features = cat_info["features"]
@@ -894,10 +976,3 @@ with tabs[2]:
             st.markdown(card_html, unsafe_allow_html=True)
 
         st.write("---")
-
-
-
-
-
-
-
