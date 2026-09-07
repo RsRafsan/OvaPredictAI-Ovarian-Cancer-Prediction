@@ -10,7 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from fpdf import FPDF
 
 # ======================================================================
-# 1. Feature Validation Data (unchanged)
+# 1. Feature Validation Data
 # ======================================================================
 VALIDATION_FEATURES = {
     "Age": {"description": "Older age increases ovarian cancer risk; clinicians consider it when interpreting markers.", "role": "Risk Factor", "link": ""},
@@ -104,7 +104,7 @@ def get_feature_display_name(short_name):
     return feature_mapping.get(short_name, short_name)
 
 # ======================================================================
-# 3. SHAP explanation (kept as-is; will be skipped if CSV missing)
+# 3. SHAP explanation
 # ======================================================================
 def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold=0.02, top_k=8):
     if shap_values_df is None:
@@ -146,7 +146,7 @@ def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold=0.0
     return df_table, styled_html
 
 # ======================================================================
-# 4. PDF generation (unchanged)
+# 4. PDF generation
 # ======================================================================
 def generate_pdf_report(user_vals, risk_label, percent, df_table=None):
     pdf = FPDF()
@@ -247,11 +247,9 @@ class FederatedSVMWrapper:
         self.margin_mean = model_dict['training_margin_mean']
         self.margin_std = model_dict['training_margin_std']
         self.classes_ = np.array([0, 1])
-        # Extract feature names from dict; fallback to a known list
         self.feature_names_in_ = np.array(model_dict.get('selected_features', FALLBACK_FEATURE_NAMES))
-        
+
     def predict_proba(self, X):
-        # X must be a 2D array-like (DataFrame or numpy)
         X_rff = self.rff_mapper.transform(X)
         raw_margins = np.dot(X_rff, self.global_w) + self.global_b
         raw_margins = raw_margins.flatten()
@@ -261,7 +259,7 @@ class FederatedSVMWrapper:
         return np.column_stack([prob_low, prob_high])
 
 # ======================================================================
-# 6. Global fallback feature list (used if nothing else works)
+# 6. Global fallback feature list
 # ======================================================================
 FALLBACK_FEATURE_NAMES = [
     'Age', 'HE4', 'Menopause', 'CA125', 'ALB', 'NEU', 'LYM%', 'ALP',
@@ -277,7 +275,7 @@ st.title("OvaPredict AI: Ovarian Cancer Prediction")
 
 with st.sidebar:
     st.header("Settings")
-    default_model_path = "overall_best_federated_xgb.pkl"
+    default_model_path = "best_federated_svm_v4.pkl"   # <-- NEW DEFAULT
     default_scaler_path = "scaler_hybrid.pkl"
 
     uploaded_model = st.file_uploader("Upload a .pkl model", type=["pkl"])
@@ -290,32 +288,27 @@ with st.sidebar:
     else:
         model_path = default_model_path
 
-    # ----- LOAD MODEL WITH WRAPPER -----
+    # Load model with automatic wrapper
     try:
         raw_model = load_model(model_path)
-        st.write(f"🔍 Loaded object type: {type(raw_model)}")
 
-        # 1. Unpack if it's a list (old XGBoost)
+        # Unpack if it's a list (old XGBoost)
         if isinstance(raw_model, list):
-            st.warning("Model is a list. Using first element.")
             raw_model = raw_model[0]
 
-        # 2. If it's a dict with rff_mapper, wrap it
+        # Wrap if it's a federated SVM dict
         if isinstance(raw_model, dict) and 'rff_mapper' in raw_model:
-            st.info("Detected Federated SVM – applying wrapper.")
             model_obj = FederatedSVMWrapper(raw_model)
-            st.success("Federated SVM wrapper created successfully!")
         else:
             model_obj = raw_model
-            st.success(f"Loaded model: {os.path.basename(model_path)}")
 
-        st.write(f"✅ Final model type: {type(model_obj)}")
+        st.success(f"Loaded model: {os.path.basename(model_path)}")
 
     except Exception as e:
         model_obj = None
         st.error(f"Could not load model: {e}")
 
-    # ----- LOAD SCALER -----
+    # Load scaler
     if uploaded_scaler:
         with open("uploaded_scaler.pkl", "wb") as f:
             f.write(uploaded_scaler.read())
@@ -330,9 +323,7 @@ with st.sidebar:
             scaler = None
             st.warning("No scaler found. Upload scaler_hybrid.pkl")
 
-# -----------------------------
 # Load dataset medians & SHAP
-# -----------------------------
 try:
     df_medians = pd.read_csv("selected_features_data.csv")
     medians = df_medians.median(numeric_only=True)
@@ -359,15 +350,12 @@ with tabs[0]:
     if model_obj is None:
         st.info("Load a model from the sidebar to begin.")
     else:
-        # Determine feature names from the model
         feature_names = try_extract_input_feature_names(model_obj)
         if feature_names is None and hasattr(model_obj, 'feature_names_in_') and model_obj.feature_names_in_ is not None:
             feature_names = list(model_obj.feature_names_in_)
         if feature_names is None:
             feature_names = FALLBACK_FEATURE_NAMES
 
-        # Ensure static defaults are consistent with current feature list
-        # If the list changed, rebuild the defaults
         if "static_defaults" not in st.session_state or set(st.session_state.static_defaults.keys()) != set(feature_names):
             st.session_state.static_defaults = {
                 feat: float(medians.get(feat, 50.0)) for feat in feature_names
@@ -408,20 +396,17 @@ with tabs[0]:
                 else:
                     scaler_features = feature_names
 
-                # Build input DataFrame in scaler order
                 input_df = pd.DataFrame([clean_vals], columns=scaler_features)
 
                 if scaler:
                     X_scaled = scaler.transform(input_df)
                     X_df = pd.DataFrame(X_scaled, columns=scaler_features, index=[0])
-                    # Reorder to model's feature order if needed
                     if list(X_df.columns) != list(feature_names):
                         X_df = X_df[feature_names]
                 else:
                     st.warning("Scaler not loaded. Using raw values.")
                     X_df = input_df
 
-                # Predict
                 proba = model_obj.predict_proba(X_df)[0]
                 classes = getattr(model_obj, "classes_", np.array([0, 1]))
                 idx_high = int(np.where(classes == 1)[0][0]) if 1 in classes else 1
@@ -430,7 +415,6 @@ with tabs[0]:
                 risk_label = risk_label_from_proba(p_high)
                 percent = p_high * 100
 
-                # Display risk card
                 risk_colors = {"Low Risk": "#4CAF50", "Moderate Risk": "#FFEB3B", "High Risk": "#F44336"}
                 color = risk_colors.get(risk_label, "#000000")
                 st.markdown(f"""
@@ -442,7 +426,6 @@ with tabs[0]:
                 </div>
                 """, unsafe_allow_html=True)
 
-                # Risk indicators
                 st.markdown("### Risk Indicators")
                 df_table = None
                 if risk_label == "Low Risk":
@@ -454,7 +437,6 @@ with tabs[0]:
                         if df_table is not None and not df_table.empty:
                             st.markdown(table_html, unsafe_allow_html=True)
 
-                # PDF download
                 st.markdown("### Download Complete Report")
                 pdf = generate_pdf_report(user_vals, risk_label, percent, df_table)
                 pdf_buffer = io.BytesIO()
@@ -534,7 +516,7 @@ with tabs[1]:
                     st.error(f"Batch prediction failed: {e}")
 
 # -----------------------------
-# Tab 3: Clinical Interpretation (full content)
+# Tab 3: Clinical Interpretation
 # -----------------------------
 with tabs[2]:
     st.header("Clinical Interpretation Reference")
