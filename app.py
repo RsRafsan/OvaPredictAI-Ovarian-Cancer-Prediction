@@ -276,7 +276,7 @@ st.title("OvaPredict AI: Ovarian Cancer Prediction")
 with st.sidebar:
     st.header("Settings")
     default_model_path = "best_federated_svm_v4.pkl"   # <-- NEW DEFAULT
-    default_scaler_path = "scaler_hybrid.pkl"
+    default_scaler_path = "scaler_hybrid_svm.pkl"
 
     uploaded_model = st.file_uploader("Upload a .pkl model", type=["pkl"])
     uploaded_scaler = st.file_uploader("Upload a .pkl scaler", type=["pkl"])
@@ -321,7 +321,7 @@ with st.sidebar:
             st.success("Scaler loaded")
         except Exception:
             scaler = None
-            st.warning("No scaler found. Upload scaler_hybrid.pkl")
+            st.warning("No scaler found. Upload scaler_hybrid_svm.pkl")
 
 # Load dataset medians & SHAP
 try:
