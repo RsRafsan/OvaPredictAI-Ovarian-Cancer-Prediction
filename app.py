@@ -2,16 +2,16 @@ import os
 import io
 import pickle
 import random
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import pandas as pd
 import numpy as np
 import streamlit as st
 from sklearn.preprocessing import StandardScaler
 from fpdf import FPDF
 
-# -----------------------------
-# Feature Validation Data (unchanged)
-# -----------------------------
+# ======================================================================
+# 1. Feature Validation Data (unchanged)
+# ======================================================================
 VALIDATION_FEATURES = {
     "Age": {"description": "Older age increases ovarian cancer risk; clinicians consider it when interpreting markers.", "role": "Risk Factor", "link": ""},
     "Menopause": {"description": "Hormone changes after menopause affect marker interpretation; postmenopausal people have higher risk.", "role": "Hormonal", "link": "https://my.clevelandclinic.org/health/diseases/21841-menopause"},
@@ -40,9 +40,9 @@ VALIDATION_FEATURES = {
     "GLU.": {"description": "Glucose shows blood sugar level; high suggests diabetes/stress, low indicates hypoglycemia.", "role": "Metabolic Marker", "link": "https://www.mayocliniclabs.com/test-catalog/overview/89115#clinical-and-interpretive"}
 }
 
-# -----------------------------
-# Utilities (unchanged)
-# -----------------------------
+# ======================================================================
+# 2. Utilities
+# ======================================================================
 @st.cache_resource(show_spinner=False)
 def load_model(model_path: str):
     with open(model_path, "rb") as f:
@@ -56,16 +56,6 @@ def try_extract_input_feature_names(model) -> Optional[List[str]]:
             if hasattr(s, "feature_names_in_"):
                 return list(s.feature_names_in_)
     return None
-
-def coerce_types(df: pd.DataFrame) -> pd.DataFrame:
-    df2 = df.copy()
-    for c in df2.columns:
-        if df2[c].dtype == object:
-            try:
-                df2[c] = pd.to_numeric(df2[c])
-            except Exception:
-                pass
-    return df2
 
 def risk_label_from_proba(p_high: float) -> str:
     if p_high < 0.40:
@@ -83,10 +73,40 @@ def style_risk(v: str):
     else:
         return "background-color: #F44336; color: white;"
 
-# -----------------------------
-# SHAP explanation (unchanged)
-# -----------------------------
-def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold: float = 0.02, top_k: int = 8):
+def get_feature_display_name(short_name):
+    feature_mapping = {
+        'Age': 'Age',
+        'HE4': 'Human Epididymis Protein 4',
+        'CA125': 'Cancer Antigen 125',
+        'CA72-4': 'Cancer Antigen 72-4',
+        'CEA': 'Carcinoembryonic Antigen',
+        'HGB': 'Hemoglobin',
+        'PLT': 'Platelets',
+        'NEU': 'Neutrophils',
+        'LYM#': 'Lymphocyte Count',
+        'LYM%': 'Lymphocyte Percentage',
+        'MONO#': 'Monocyte Count',
+        'PCT': 'Procalcitonin',
+        'ALB': 'Albumin',
+        'ALP': 'Alkaline Phosphatase',
+        'AST': 'Aspartate Aminotransferase',
+        'TBIL': 'Total Bilirubin',
+        'DBIL': 'Direct Bilirubin',
+        'IBIL': 'Indirect Bilirubin',
+        'TP': 'Total Protein',
+        'GLO': 'Globulin',
+        'Na': 'Sodium',
+        'Ca': 'Calcium',
+        'GLU.': 'Glucose',
+        'MCH': 'Mean Corpuscular Hemoglobin',
+        'Menopause': 'Menopausal Status'
+    }
+    return feature_mapping.get(short_name, short_name)
+
+# ======================================================================
+# 3. SHAP explanation (kept as-is; will be skipped if CSV missing)
+# ======================================================================
+def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold=0.02, top_k=8):
     if shap_values_df is None:
         return []
     cols = [c for c in feature_names if c in shap_values_df.columns]
@@ -101,17 +121,13 @@ def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold: fl
     for feat in strong.index:
         if mean_signed[feat] > 0:
             val = float(input_df.iloc[0].get(feat, np.nan))
-            feature_info = VALIDATION_FEATURES.get(feat, {
-                "description": "Clinical monitoring and follow-up advised.",
-                "role": "General Marker",
-                "link": ""
-            })
+            info = VALIDATION_FEATURES.get(feat, {"description": "Clinical monitoring advised.", "role": "General Marker"})
             table_data.append({
                 "Feature": feat,
                 "Value": f"{val:.2f}",
                 "Risk": "High",
-                "Role": feature_info["role"],
-                "Interpretation": feature_info["description"]
+                "Role": info["role"],
+                "Interpretation": info["description"]
             })
     if not table_data:
         return []
@@ -121,7 +137,7 @@ def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold: fl
     <div style='overflow-x:auto;'>
         <style>
             table {{ border-collapse: collapse; width: 100%; }}
-            th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left !important; vertical-align: top; white-space: normal; }}
+            th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; vertical-align: top; }}
             th {{ background-color: #f2f2f2; font-weight: bold; }}
         </style>
         {table_html}
@@ -129,9 +145,9 @@ def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold: fl
     """
     return df_table, styled_html
 
-# -----------------------------
-# PDF Generation (unchanged)
-# -----------------------------
+# ======================================================================
+# 4. PDF generation (unchanged)
+# ======================================================================
 def generate_pdf_report(user_vals, risk_label, percent, df_table=None):
     pdf = FPDF()
     pdf.add_page()
@@ -183,38 +199,34 @@ def generate_pdf_report(user_vals, risk_label, percent, df_table=None):
             pdf.cell(col_widths[i], 6, header, border=1)
         pdf.ln()
         pdf.set_font("Arial", "", 7)
-        for idx, row in df_table.iterrows():
-            feature = str(row["Feature"])
-            pdf.cell(col_widths[0], 6, feature, border=1)
-            value = str(row["Value"])
-            pdf.cell(col_widths[1], 6, value, border=1)
-            risk = str(row["Risk"])
-            pdf.cell(col_widths[2], 6, risk, border=1)
-            role = str(row["Role"])
-            pdf.cell(col_widths[3], 6, role, border=1)
+        for _, row in df_table.iterrows():
+            pdf.cell(col_widths[0], 6, str(row["Feature"]), border=1)
+            pdf.cell(col_widths[1], 6, str(row["Value"]), border=1)
+            pdf.cell(col_widths[2], 6, str(row["Risk"]), border=1)
+            pdf.cell(col_widths[3], 6, str(row["Role"]), border=1)
             facts = str(row["Interpretation"])
             text_width = col_widths[4] - 2
             text_height = 3.0
             words = facts.split()
             lines = []
-            current_line = ""
-            for word in words:
-                test_line = current_line + word + " "
-                if pdf.get_string_width(test_line) < text_width:
-                    current_line = test_line
+            cur = ""
+            for w in words:
+                test = cur + w + " "
+                if pdf.get_string_width(test) < text_width:
+                    cur = test
                 else:
-                    if current_line:
-                        lines.append(current_line)
-                    current_line = word + " "
-            if current_line:
-                lines.append(current_line)
+                    if cur:
+                        lines.append(cur)
+                    cur = w + " "
+            if cur:
+                lines.append(cur)
             cell_height = max(6, len(lines) * text_height)
             x = pdf.get_x()
             y = pdf.get_y()
             pdf.cell(col_widths[4], cell_height, "", border=1)
             pdf.set_xy(x, y)
             for i, line in enumerate(lines):
-                pdf.set_xy(x, y + (i * text_height))
+                pdf.set_xy(x, y + i * text_height)
                 pdf.cell(col_widths[4], text_height, line, 0, 0, 'L')
             pdf.set_xy(x + col_widths[4], y + cell_height)
             pdf.ln(cell_height - 6)
@@ -224,39 +236,9 @@ def generate_pdf_report(user_vals, risk_label, percent, df_table=None):
     pdf.cell(0, 8, "Generated by OvaPredict AI - For clinical decision support only", ln=True, align="R")
     return pdf
 
-def get_feature_display_name(short_name):
-    feature_mapping = {
-        'Age': 'Age',
-        'HE4': 'Human Epididymis Protein 4',
-        'CA125': 'Cancer Antigen 125',
-        'CA72-4': 'Cancer Antigen 72-4',
-        'CEA': 'Carcinoembryonic Antigen',
-        'HGB': 'Hemoglobin',
-        'PLT': 'Platelets',
-        'NEU': 'Neutrophils',
-        'LYM#': 'Lymphocyte Count',
-        'LYM%': 'Lymphocyte Percentage',
-        'MONO#': 'Monocyte Count',
-        'PCT': 'Procalcitonin',
-        'ALB': 'Albumin',
-        'ALP': 'Alkaline Phosphatase',
-        'AST': 'Aspartate Aminotransferase',
-        'TBIL': 'Total Bilirubin',
-        'DBIL': 'Direct Bilirubin',
-        'IBIL': 'Indirect Bilirubin',
-        'TP': 'Total Protein',
-        'GLO': 'Globulin',
-        'Na': 'Sodium',
-        'Ca': 'Calcium',
-        'GLU.': 'Glucose',
-        'MCH': 'Mean Corpuscular Hemoglobin',
-        'Menopause': 'Menopausal Status'
-    }
-    return feature_mapping.get(short_name, short_name)
-
-# ============================================================
-# NEW: Wrapper for Federated SVM
-# ============================================================
+# ======================================================================
+# 5. Federated SVM Wrapper
+# ======================================================================
 class FederatedSVMWrapper:
     def __init__(self, model_dict):
         self.rff_mapper = model_dict['rff_mapper']
@@ -265,11 +247,11 @@ class FederatedSVMWrapper:
         self.margin_mean = model_dict['training_margin_mean']
         self.margin_std = model_dict['training_margin_std']
         self.classes_ = np.array([0, 1])
-        if 'selected_features' in model_dict and model_dict['selected_features']:
-            self.feature_names_in_ = np.array(model_dict['selected_features'])
-        else:
-            self.feature_names_in_ = None
+        # Extract feature names from dict; fallback to a known list
+        self.feature_names_in_ = np.array(model_dict.get('selected_features', FALLBACK_FEATURE_NAMES))
+        
     def predict_proba(self, X):
+        # X must be a 2D array-like (DataFrame or numpy)
         X_rff = self.rff_mapper.transform(X)
         raw_margins = np.dot(X_rff, self.global_w) + self.global_b
         raw_margins = raw_margins.flatten()
@@ -278,9 +260,18 @@ class FederatedSVMWrapper:
         prob_low = 1 - prob_high
         return np.column_stack([prob_low, prob_high])
 
-# -----------------------------
-# UI Setup
-# -----------------------------
+# ======================================================================
+# 6. Global fallback feature list (used if nothing else works)
+# ======================================================================
+FALLBACK_FEATURE_NAMES = [
+    'Age', 'HE4', 'Menopause', 'CA125', 'ALB', 'NEU', 'LYM%', 'ALP',
+    'PLT', 'LYM#', 'AST', 'PCT', 'IBIL', 'TBIL', 'CA72-4', 'GLO',
+    'MONO#', 'HGB', 'Na', 'CEA', 'Ca', 'GLU.', 'DBIL', 'TP', 'MCH'
+]
+
+# ======================================================================
+# 7. Streamlit UI
+# ======================================================================
 st.set_page_config(page_title="OvaPredict AI", layout="wide")
 st.title("OvaPredict AI: Ovarian Cancer Prediction")
 
@@ -299,41 +290,32 @@ with st.sidebar:
     else:
         model_path = default_model_path
 
-    # ======== IMPROVED MODEL LOADING WITH DEBUG ========
+    # ----- LOAD MODEL WITH WRAPPER -----
     try:
         raw_model = load_model(model_path)
-        st.write(f"🔍 Loaded object type: {type(raw_model)}")  # Debug
+        st.write(f"🔍 Loaded object type: {type(raw_model)}")
 
+        # 1. Unpack if it's a list (old XGBoost)
         if isinstance(raw_model, list):
-            st.warning("Model file contained a list. Using the first element.")
+            st.warning("Model is a list. Using first element.")
             raw_model = raw_model[0]
-            st.write(f"🔍 After list unpack, type: {type(raw_model)}")
 
-        if isinstance(raw_model, dict):
-            st.write(f"🔍 Dict keys: {list(raw_model.keys())}")  # Debug
-            # Check for Federated SVM
-            if 'rff_mapper' in raw_model and 'global_w' in raw_model:
-                st.info("Detected custom Federated SVM. Wrapping it for compatibility...")
-                model_obj = FederatedSVMWrapper(raw_model)
-                st.success("Custom Federated SVM loaded successfully!")
-            elif 'model' in raw_model:
-                st.info("Dict contains 'model' key. Extracting it.")
-                model_obj = raw_model['model']
-            elif 'classifier' in raw_model:
-                st.info("Dict contains 'classifier' key. Extracting it.")
-                model_obj = raw_model['classifier']
-            else:
-                st.error("Unrecognized dict: no 'rff_mapper', 'model', or 'classifier' found.")
-                model_obj = None
+        # 2. If it's a dict with rff_mapper, wrap it
+        if isinstance(raw_model, dict) and 'rff_mapper' in raw_model:
+            st.info("Detected Federated SVM – applying wrapper.")
+            model_obj = FederatedSVMWrapper(raw_model)
+            st.success("Federated SVM wrapper created successfully!")
         else:
-            model_obj = raw_model  # assume it's a standard model (XGBoost, sklearn, etc.)
+            model_obj = raw_model
             st.success(f"Loaded model: {os.path.basename(model_path)}")
+
+        st.write(f"✅ Final model type: {type(model_obj)}")
 
     except Exception as e:
         model_obj = None
         st.error(f"Could not load model: {e}")
-    # ===================================================
 
+    # ----- LOAD SCALER -----
     if uploaded_scaler:
         with open("uploaded_scaler.pkl", "wb") as f:
             f.write(uploaded_scaler.read())
@@ -352,60 +334,52 @@ with st.sidebar:
 # Load dataset medians & SHAP
 # -----------------------------
 try:
-    df = pd.read_csv("selected_features_data.csv")
-    medians = df.median(numeric_only=True)
+    df_medians = pd.read_csv("selected_features_data.csv")
+    medians = df_medians.median(numeric_only=True)
 except Exception:
     medians = {}
 
 try:
     shap_values_df = pd.read_csv("shap_values.csv")
-    st.sidebar.success("Loaded SHAP values from shap_values.csv")
+    st.sidebar.success("Loaded SHAP values")
 except Exception:
     shap_values_df = None
-    st.sidebar.warning("No shap_values.csv found. Risk indicators will be limited.")
+    st.sidebar.warning("No shap_values.csv found. Risk indicators limited.")
 
-FALLBACK_FEATURE_NAMES = [
-    'Age', 'HE4', 'Menopause', 'CA125', 'ALB', 'NEU', 'LYM%', 'ALP',
-    'PLT', 'LYM#', 'AST', 'PCT', 'IBIL', 'TBIL', 'CA72-4', 'GLO',
-    'MONO#', 'HGB', 'Na', 'CEA', 'Ca', 'GLU.', 'DBIL', 'TP', 'MCH'
-]
-
-# -----------------------------
-# Tabs
-# -----------------------------
+# ======================================================================
+# 8. Tabs
+# ======================================================================
 tabs = st.tabs(["Single Prediction", "Batch Prediction", "Clinical & Interpretive"])
 
 # -----------------------------
-# Single Prediction
+# Tab 1: Single Prediction
 # -----------------------------
 with tabs[0]:
     st.subheader("Single Prediction")
-
     if model_obj is None:
         st.info("Load a model from the sidebar to begin.")
     else:
-        # Try to get feature names from model
+        # Determine feature names from the model
         feature_names = try_extract_input_feature_names(model_obj)
+        if feature_names is None and hasattr(model_obj, 'feature_names_in_') and model_obj.feature_names_in_ is not None:
+            feature_names = list(model_obj.feature_names_in_)
         if feature_names is None:
-            # If wrapper has feature_names_in_, use it
-            if hasattr(model_obj, 'feature_names_in_') and model_obj.feature_names_in_ is not None:
-                feature_names = list(model_obj.feature_names_in_)
-            else:
-                feature_names = FALLBACK_FEATURE_NAMES
-        st.markdown("Enter the feature values:")
+            feature_names = FALLBACK_FEATURE_NAMES
 
-        if "static_defaults" not in st.session_state:
+        # Ensure static defaults are consistent with current feature list
+        # If the list changed, rebuild the defaults
+        if "static_defaults" not in st.session_state or set(st.session_state.static_defaults.keys()) != set(feature_names):
             st.session_state.static_defaults = {
-                feat: float(medians.get(feat, random.uniform(1, 100)))
-                for feat in feature_names
+                feat: float(medians.get(feat, 50.0)) for feat in feature_names
             }
 
+        st.markdown("Enter the feature values:")
         cols = st.columns(min(4, len(feature_names)))
         user_vals = {}
 
         for i, feat in enumerate(feature_names):
             with cols[i % len(cols)]:
-                default_val = st.session_state.static_defaults[feat]
+                default_val = st.session_state.static_defaults.get(feat, 50.0)
                 if feat.lower() == "age":
                     user_input = st.number_input(
                         f"🔹 {feat}",
@@ -427,25 +401,27 @@ with tabs[0]:
         if st.button("Predict", type="primary"):
             try:
                 clean_vals = {k: float(v) for k, v in user_vals.items()}
-                
-                # ----- ENHANCED FEATURE ALIGNMENT -----
+
+                # Align with scaler
                 if scaler and hasattr(scaler, 'feature_names_in_'):
                     scaler_features = list(scaler.feature_names_in_)
                 else:
                     scaler_features = feature_names
 
+                # Build input DataFrame in scaler order
                 input_df = pd.DataFrame([clean_vals], columns=scaler_features)
 
                 if scaler:
                     X_scaled = scaler.transform(input_df)
                     X_df = pd.DataFrame(X_scaled, columns=scaler_features, index=[0])
+                    # Reorder to model's feature order if needed
                     if list(X_df.columns) != list(feature_names):
                         X_df = X_df[feature_names]
                 else:
                     st.warning("Scaler not loaded. Using raw values.")
                     X_df = input_df
-                # ---------------------------------------
 
+                # Predict
                 proba = model_obj.predict_proba(X_df)[0]
                 classes = getattr(model_obj, "classes_", np.array([0, 1]))
                 idx_high = int(np.where(classes == 1)[0][0]) if 1 in classes else 1
@@ -454,22 +430,19 @@ with tabs[0]:
                 risk_label = risk_label_from_proba(p_high)
                 percent = p_high * 100
 
+                # Display risk card
                 risk_colors = {"Low Risk": "#4CAF50", "Moderate Risk": "#FFEB3B", "High Risk": "#F44336"}
                 color = risk_colors.get(risk_label, "#000000")
                 st.markdown(f"""
-                <div style="
-                    padding: 20px;
-                    border-radius: 10px;
-                    background-color: {color};
-                    color: {'white' if risk_label == 'High Risk' else 'black'};
-                    font-size: 28px;
-                    font-weight: bold;
-                    text-align: center;
-                    box-shadow: 2px 2px 12px rgba(0,0,0,0.2);
-                    margin-bottom: 20px;
-                ">{risk_label} ({percent:.2f}%)</div>
+                <div style="padding:20px; border-radius:10px; background-color:{color}; 
+                            color:{'white' if risk_label=='High Risk' else 'black'}; 
+                            font-size:28px; font-weight:bold; text-align:center; 
+                            box-shadow:2px 2px 12px rgba(0,0,0,0.2); margin-bottom:20px;">
+                    {risk_label} ({percent:.2f}%)
+                </div>
                 """, unsafe_allow_html=True)
 
+                # Risk indicators
                 st.markdown("### Risk Indicators")
                 df_table = None
                 if risk_label == "Low Risk":
@@ -481,6 +454,7 @@ with tabs[0]:
                         if df_table is not None and not df_table.empty:
                             st.markdown(table_html, unsafe_allow_html=True)
 
+                # PDF download
                 st.markdown("### Download Complete Report")
                 pdf = generate_pdf_report(user_vals, risk_label, percent, df_table)
                 pdf_buffer = io.BytesIO()
@@ -489,7 +463,7 @@ with tabs[0]:
                 st.download_button(
                     label="Download Full Report (PDF)",
                     data=pdf_buffer,
-                    file_name="OvaPredict AI-Complete_Report.pdf",
+                    file_name="OvaPredict_Report.pdf",
                     mime="application/pdf",
                     type="primary"
                 )
@@ -500,7 +474,7 @@ with tabs[0]:
                     st.download_button(
                         label="Download High-Risk Indicators (CSV)",
                         data=csv_buf.getvalue(),
-                        file_name="OvaPredict AI-High_Risk_Indicators.csv",
+                        file_name="high_risk_indicators.csv",
                         mime="text/csv"
                     )
 
@@ -508,29 +482,32 @@ with tabs[0]:
                 st.error(f"Prediction failed: {e}")
 
 # -----------------------------
-# Batch Prediction (unchanged except alignment)
+# Tab 2: Batch Prediction
 # -----------------------------
 with tabs[1]:
     st.subheader("Batch Prediction")
-    if model_obj:
+    if model_obj is None:
+        st.info("Load a model first.")
+    else:
         batch_file = st.file_uploader("Upload CSV", type=["csv"], key="batch")
         if batch_file:
-            df = pd.read_csv(batch_file)
-            st.write("Preview:", df.head())
+            df_batch = pd.read_csv(batch_file)
+            st.write("Preview:", df_batch.head())
 
             if st.button("Predict (Batch)"):
                 try:
                     feature_names = try_extract_input_feature_names(model_obj) or FALLBACK_FEATURE_NAMES
                     if scaler is None:
-                        st.error("Scaler not loaded! Upload scaler_hybrid.pkl")
+                        st.error("Scaler not loaded!")
                     else:
                         if hasattr(scaler, 'feature_names_in_'):
                             scaler_features = list(scaler.feature_names_in_)
                         else:
                             scaler_features = feature_names
-                        X_df = df[scaler_features].copy()
+
+                        X_df = df_batch[scaler_features].copy()
                         X_scaled = scaler.transform(X_df)
-                        X_scaled_df = pd.DataFrame(X_scaled, columns=scaler_features, index=df.index)
+                        X_scaled_df = pd.DataFrame(X_scaled, columns=scaler_features, index=df_batch.index)
                         if list(X_scaled_df.columns) != list(feature_names):
                             X_scaled_df = X_scaled_df[feature_names]
 
@@ -539,11 +516,11 @@ with tabs[1]:
                         idx_high = int(np.where(classes == 1)[0][0]) if 1 in classes else 1
                         p_high = proba[:, idx_high]
 
-                        result = pd.DataFrame(index=df.index)
+                        result = pd.DataFrame(index=df_batch.index)
                         result["High Risk (%)"] = (p_high * 100).round(2).astype(str) + "%"
                         result["Risk Level"] = [risk_label_from_proba(p) for p in p_high]
 
-                        st.success("Predictions completed.")
+                        st.success("Batch predictions completed.")
                         st.dataframe(
                             result.head(20).style.applymap(lambda v: style_risk(v), subset=["Risk Level"]),
                             use_container_width=True
@@ -554,14 +531,205 @@ with tabs[1]:
                         st.download_button("📄 Download Batch Predictions (CSV)", csv_buf.getvalue(), "batch_predictions.csv", "text/csv")
 
                 except Exception as e:
-                    st.error(f"Prediction failed. Error: {e}")
+                    st.error(f"Batch prediction failed: {e}")
 
 # -----------------------------
-# Tab 3: Clinical Interpretation (unchanged – omitted for brevity)
+# Tab 3: Clinical Interpretation (full content)
 # -----------------------------
 with tabs[2]:
     st.header("Clinical Interpretation Reference")
-    # ... (paste your original Tab 3 content, it's long but unchanged)
-    # I'll include it in the final code block for completeness.
-    # For now, just show a placeholder; but in the final answer I'll include it fully.
-    st.markdown("*(Clinical interpretation content goes here – copy from your original file)*")
+
+    categories = {
+        "Risk Factors": {
+            "features": ["Age", "Menopause"],
+            "color": "#FFF4E6"
+        },
+        "Tumor Markers": {
+            "features": [
+                "Human Epididymis Protein 4 | HE4",
+                "Cancer Antigen 125 | CA125",
+                "Carcinoembryonic Antigen | CEA",
+                "Cancer Antigen 72-4 | CA72-4"
+            ],
+            "color": "#E8F4FF"
+        },
+        "Blood & Immune Markers": {
+            "features": [
+                "Procalcitonin | PCT",
+                "Neutrophils | NEU",
+                "Lymphocyte Percentage | LYM%",
+                "Lymphocyte Count | LYM#",
+                "Monocyte Count | MONO#",
+                "Platelets | PLT",
+                "Mean Corpuscular Hemoglobin | MCH",
+                "Hemoglobin | HGB"
+            ],
+            "color": "#E8FFF3"
+        },
+        "Liver & Metabolic Markers": {
+            "features": [
+                "Aspartate Aminotransferase | AST",
+                "Alkaline Phosphatase | ALP",
+                "Total Bilirubin | TBIL",
+                "Direct Bilirubin | DBIL",
+                "Indirect Bilirubin | IBIL",
+                "Albumin | ALB",
+                "Total Protein | TP",
+                "Globulin | GLO",
+                "Glucose | GLU."
+            ],
+            "color": "#FFF1F2"
+        },
+        "Electrolytes & Nutrition": {
+            "features": ["Sodium | Na", "Calcium | Ca"],
+            "color": "#F5F5FF"
+        }
+    }
+
+    expanded_texts = {
+        "Age": (
+            "Age itself is not a lab test but a clinical factor; older age raises the chance of ovarian cancer. "
+            "Most ovarian cancers occur in older adults, and risk increases after menopause. Clinicians always consider age when interpreting lab results and deciding on further testing or imaging."
+        ),
+        "Menopause": (
+            "Menopause is the permanent end of menstrual cycles, identified after 12 months without a period. "
+            "Hormone shifts after menopause change how markers behave; some algorithms use menopausal status to set different risk thresholds. Menopausal state also affects screening and follow-up strategies."
+        ),
+        "Human Epididymis Protein 4 | HE4": (
+            "HE4 is a blood protein often higher in epithelial ovarian cancers. It's measured using a lab immunoassay. "
+            "HE4 is most useful to monitor patients who already had ovarian cancer; rising values can indicate recurrence, while falling values suggest response to treatment. It's often combined with CA125 for better accuracy. "
+            "Higher-than-normal HE4 raises concern for ovarian tumor activity but must be interpreted with clinical context because some benign conditions may also alter levels."
+        ),
+        "Cancer Antigen 125 | CA125": (
+            "CA125 is a protein frequently produced by ovarian cancer cells and measured in blood. "
+            "Clinicians commonly use CA125 to track response to therapy and to detect recurrence after treatment; it is not recommended alone for general population screening due to false positives. "
+            "Steady rises in CA125 after treatment suggest residual disease or recurrence, while isolated mild increases may be from benign causes like menstruation or inflammation."
+        ),
+        "Carcinoembryonic Antigen | CEA": (
+            "CEA is a tumor-associated protein used widely in colorectal cancer but sometimes raised in ovarian tumors (especially mucinous types). "
+            "CEA is used alongside other markers to help determine tumor origin or monitor disease progression in cancers where it is informative. "
+            "High CEA suggests malignancy or heavy inflammation and usually triggers follow-up imaging or additional tumor-specific tests."
+        ),
+        "Cancer Antigen 72-4 | CA72-4": (
+            "CA72-4 is a tumor marker that may be elevated in ovarian or gastrointestinal cancers. "
+            "It's considered an adjunct, helpful when used with CA125 and clinical findings, but rarely used as a single diagnostic test. "
+            "Elevated CA72-4 supports further investigation but is not definitive; doctors combine it with imaging and other markers."
+        ),
+        "Procalcitonin | PCT": (
+            "Procalcitonin (PCT) increases when the body has a serious bacterial infection. "
+            "PCT helps differentiate bacterial infections from viral or inflammatory conditions and can guide antibiotic decisions in hospital and ICU settings. "
+            "High PCT often indicates bacterial sepsis or severe infection; low values suggest bacterial infection is unlikely but don't rule out other causes."
+        ),
+        "Neutrophils | NEU": (
+            "Neutrophils are white blood cells that respond rapidly to infection. "
+            "Doctors use neutrophil counts to detect bacterial infection or inflammation and to track response to therapy. "
+            "High neutrophils point to bacterial infection or inflammation; low neutrophils increase infection risk and require urgent evaluation."
+        ),
+        "Lymphocyte Percentage | LYM%": (
+            "Lymphocyte percentage shows the proportion of white blood cells that are lymphocytes. "
+            "It complements the absolute lymphocyte count to assess immune status and response to infections or immune conditions. "
+            "A high lymphocyte percentage often accompanies viral infections or immune activation; low percentages suggest weakened immune function."
+        ),
+        "Lymphocyte Count | LYM#": (
+            "Absolute lymphocyte count is the total number of lymphocytes in blood. "
+            "It's used to evaluate immune strength, detect infections, and monitor conditions affecting lymphocytes (e.g., HIV or certain blood cancers). "
+            "Low absolute lymphocytes point to immune suppression or bone marrow issues; high counts suggest infection or chronic immune activation."
+        ),
+        "Monocyte Count | MONO#": (
+            "Monocytes are white blood cells involved in longer-term immune responses and tissue repair. "
+            "Monocyte counts help suggest chronic infection, inflammation, or recovery phases after acute illness. "
+            "Elevated monocytes often indicate chronic inflammation or certain infections; low counts usually reflect bone marrow suppression or acute illness."
+        ),
+        "Platelets | PLT": (
+            "Platelets are small blood components that stop bleeding by forming clots. "
+            "Platelet count is checked before surgery, during chemotherapy, and when bleeding or clotting problems are suspected. "
+            "High platelets may be a sign of inflammation or malignancy risk; low platelets raise bleeding concerns and often trigger further evaluation."
+        ),
+        "Mean Corpuscular Hemoglobin | MCH": (
+            "MCH estimates the average hemoglobin per red blood cell and helps classify types of anemia. "
+            "MCH is used with other RBC indices (MCV, MCHC) to decide whether anemia is due to iron deficiency or vitamin B12/folate problems. "
+            "Low MCH points toward iron-deficiency microcytic anemia; high MCH suggests macrocytic anemia from B12/folate deficiency."
+        ),
+        "Hemoglobin | HGB": (
+            "Hemoglobin reflects the blood's oxygen-carrying capacity. "
+            "HGB guides diagnosis of anemia, transfusion needs, and overall clinical fitness for procedures. "
+            "Low HGB causes fatigue and signals anemia; high HGB may indicate dehydration or chronic lung disease."
+        ),
+        "Aspartate Aminotransferase | AST": (
+            "AST is an enzyme released when liver or muscle cells are damaged. "
+            "AST helps detect liver injury, monitor hepatitis, and assess muscle damage; it's used with ALT and other liver tests for context. "
+            "High AST suggests liver or muscle injury; the degree and pattern relative to ALT help suggest specific causes (viral, alcoholic, or other)."
+        ),
+        "Alkaline Phosphatase | ALP": (
+            "ALP is an enzyme from liver and bone that rises when bile flow is blocked or bone turnover is increased. "
+            "ALP helps distinguish liver vs bone sources of disease when paired with other tests (e.g., GGT for liver). "
+            "Very high ALP often points to bile duct obstruction or bone disease; moderate rises occur in many liver disorders."
+        ),
+        "Total Bilirubin | TBIL": (
+            "Total bilirubin is the sum of processed and unprocessed bilirubin reflecting red cell breakdown and liver clearance. "
+            "TBIL helps evaluate jaundice causes and overall liver excretory function. "
+            "Elevated TBIL indicates hemolysis, impaired liver conjugation, or biliary obstruction and usually prompts imaging and additional liver testing."
+        ),
+        "Direct Bilirubin | DBIL": (
+            "Direct (conjugated) bilirubin shows how well the liver processes and excretes bilirubin. "
+            "High direct bilirubin focuses attention on obstructive or cholestatic liver disease and biliary problems. "
+            "Elevated DBIL suggests obstruction of bile flow or hepatocellular excretion problems, often requiring imaging or specialist referral."
+        ),
+        "Indirect Bilirubin | IBIL": (
+            "Indirect (unconjugated) bilirubin indicates how much bilirubin is circulating before liver processing. "
+            "High indirect bilirubin raises concern for hemolysis or inherited conjugation disorders; it's evaluated alongside TBIL/DBIL. "
+            "Elevated IBIL usually points to red cell breakdown (hemolysis) or reduced liver conjugation capacity."
+        ),
+        "Albumin | ALB": (
+            "Albumin is the main blood protein reflecting nutrition and liver synthetic ability. "
+            "Low albumin signals poor nutrition, chronic inflammation, or impaired liver function and affects drug dosing and prognosis. "
+            "Markedly low albumin often indicates severe disease or malnutrition; high albumin commonly reflects dehydration."
+        ),
+        "Total Protein | TP": (
+            "Total protein measures albumin plus globulins and gives a broad view of nutritional and immune status. "
+            "TP helps detect protein-losing states, liver disease, or high protein production from immune disorders. "
+            "Low TP points to malnutrition or protein loss; high TP suggests chronic inflammation or plasma cell disorders and needs further testing."
+        ),
+        "Globulin | GLO": (
+            "Globulins include antibodies and other immune proteins produced in infections or immune activation. "
+            "Elevated globulins prompt evaluation for chronic infections, autoimmune disease, or disorders like multiple myeloma. "
+            "High globulin levels indicate immune activation or chronic inflammation; low levels suggest poor antibody production."
+        ),
+        "Glucose | GLU.": (
+            "Blood glucose indicates current blood sugar levels. "
+            "Glucose testing diagnoses diabetes and guides immediate management of hypo- or hyperglycemia. "
+            "High glucose points to diabetes or stress hyperglycemia; low glucose can cause dizziness, weakness, and requires urgent correction."
+        ),
+        "Sodium | Na": (
+            "Sodium shows how well the body balances water and electrolytes. "
+            "Sodium helps diagnose dehydration, fluid overload, or hormone imbalances and guides fluid therapy. "
+            "Low sodium causes confusion and seizures in severe cases; high sodium usually reflects water loss and requires careful correction."
+        ),
+        "Calcium | Ca": (
+            "Calcium supports bone health, nerve signaling, and muscle function. "
+            "Calcium testing evaluates bone disease, parathyroid function, and some cancers that raise calcium. "
+            "High calcium can cause nausea and arrhythmias and often stems from hyperparathyroidism or malignancy; low calcium causes muscle cramps and tetany."
+        )
+    }
+
+    for cat_name, cat_info in categories.items():
+        st.subheader(cat_name)
+        for feat in cat_info["features"]:
+            texts = expanded_texts.get(feat, "")
+            if isinstance(texts, tuple):
+                paragraphs = [p for p in texts if p and p.strip()]
+            else:
+                paragraphs = [texts] if texts else ["No detailed summary available."]
+
+            abbr = feat.split("|")[-1].strip()
+            link = VALIDATION_FEATURES.get(abbr, {}).get("link", "")
+            link_html = f'<a href="{link}" target="_blank" style="text-decoration:none; color:#0056b3; font-weight:600;">Learn More</a>' if link else ""
+            card_html = f"""
+            <div style="background:{cat_info['color']}; border:1px solid rgba(0,0,0,0.06); border-radius:12px; padding:16px; margin-bottom:16px;">
+                <h4 style="margin:0 0 8px 0; color:#102a43;">{feat}</h4>
+            """
+            for p in paragraphs:
+                card_html += f'<p style="margin:6px 0; color:#243b53; font-size:15px; line-height:1.5;">{p}</p>'
+            card_html += f'<div style="margin-top:10px; text-align:right;">{link_html}</div></div>'
+            st.markdown(card_html, unsafe_allow_html=True)
+        st.write("---")
