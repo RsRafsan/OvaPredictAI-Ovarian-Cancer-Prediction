@@ -41,6 +41,81 @@ VALIDATION_FEATURES = {
 }
 
 # ======================================================================
+# 1b. Feature metadata — derived from 'All Raw Data'
+#     No widget min/max is enforced; values can exceed the observed range.
+# ======================================================================
+INT_FEATURES  = {"Age", "ALP", "PLT", "AST"}
+BOOL_FEATURES = {"Menopause"}
+
+# Observed training ranges — used ONLY for a soft warning, never as hard limits.
+OBSERVED_RANGE = {
+    "Age":       (15,     83),
+    "HE4":       (16.71,  3537.6),
+    "CA125":     (3.75,   4468),
+    "CA72-4":    (0.2,    158.5),
+    "Menopause": (0,      1),
+    "NEU":       (37.2,   92),
+    "ALB":       (22,     51.5),
+    "LYM%":      (3.9,    51.6),
+    "ALP":       (26,     763),
+    "LYM#":      (0.35,   3.49),
+    "PLT":       (74,     868),
+    "AST":       (7,      78),
+    "PCT":       (0.07,   0.69),
+    "GLO":       (14.1,   47.6),
+    "TBIL":      (2.5,    38.3),
+    "IBIL":      (1.0,    28.4),
+    "HGB":       (61.8,   189),
+    "Ca":        (0.92,   2.83),
+    "MCH":       (17.7,   36.8),
+    "MONO#":     (0.07,   0.97),
+    "Na":        (125.1,  150.7),
+    "DBIL":      (0.9,    12.1),
+    "PDW":       (8.8,    22.8),
+    "GLU.":      (3.57,   12.44),
+    "EO%":       (0.0,    7.6),
+}
+
+def infer_kind(feat: str) -> str:
+    if feat in BOOL_FEATURES: return "boolean"
+    if feat in INT_FEATURES:  return "int"
+    return "float"
+
+def infer_step(median, kind: str) -> float:
+    """Step size derived from the feature's median magnitude."""
+    if kind in ("int", "boolean"):
+        return 1
+    m = abs(float(median)) if pd.notna(median) else 1.0
+    if m < 10:   return 0.01
+    if m < 100:  return 0.1
+    return 1.0
+
+def step_to_format(step: float, kind: str) -> str:
+    if kind == "int":  return "%d"
+    if step >= 1:      return "%.1f"
+    if step >= 0.1:    return "%.1f"
+    if step >= 0.01:   return "%.2f"
+    return "%.3f"
+
+def get_median(feat: str, medians) -> float:
+    """Median from the dataset; if missing, fall back to the observed mid-point."""
+    try:
+        m = medians.get(feat)
+        if m is not None and pd.notna(m):
+            return float(m)
+    except Exception:
+        pass
+    lo, hi = OBSERVED_RANGE.get(feat, (0.0, 1.0))
+    return float((lo + hi) / 2)
+
+def is_outside_observed(feat: str, value: float) -> bool:
+    rng = OBSERVED_RANGE.get(feat)
+    if not rng or feat in BOOL_FEATURES:
+        return False
+    lo, hi = rng
+    return value < lo or value > hi
+
+# ======================================================================
 # 2. Utilities
 # ======================================================================
 @st.cache_resource(show_spinner=False)
@@ -99,7 +174,9 @@ def get_feature_display_name(short_name):
         'Ca': 'Calcium',
         'GLU.': 'Glucose',
         'MCH': 'Mean Corpuscular Hemoglobin',
-        'Menopause': 'Menopausal Status'
+        'Menopause': 'Menopausal Status',
+        'PDW': 'Platelet Distribution Width',
+        'EO%': 'Eosinophil Percentage'
     }
     return feature_mapping.get(short_name, short_name)
 
@@ -275,7 +352,7 @@ st.title("OvaPredict AI: Ovarian Cancer Prediction")
 
 with st.sidebar:
     st.header("Settings")
-    default_model_path = "best_federated_svm_v4.pkl"   # <-- NEW DEFAULT
+    default_model_path = "best_federated_svm_v4.pkl"
     default_scaler_path = "scaler_hybrid_svm.pkl"
 
     uploaded_model = st.file_uploader("Upload a .pkl model", type=["pkl"])
@@ -288,27 +365,19 @@ with st.sidebar:
     else:
         model_path = default_model_path
 
-    # Load model with automatic wrapper
     try:
         raw_model = load_model(model_path)
-
-        # Unpack if it's a list (old XGBoost)
         if isinstance(raw_model, list):
             raw_model = raw_model[0]
-
-        # Wrap if it's a federated SVM dict
         if isinstance(raw_model, dict) and 'rff_mapper' in raw_model:
             model_obj = FederatedSVMWrapper(raw_model)
         else:
             model_obj = raw_model
-
         st.success(f"Loaded model: {os.path.basename(model_path)}")
-
     except Exception as e:
         model_obj = None
         st.error(f"Could not load model: {e}")
 
-    # Load scaler
     if uploaded_scaler:
         with open("uploaded_scaler.pkl", "wb") as f:
             f.write(uploaded_scaler.read())
@@ -356,9 +425,10 @@ with tabs[0]:
         if feature_names is None:
             feature_names = FALLBACK_FEATURE_NAMES
 
-        if "static_defaults" not in st.session_state or set(st.session_state.static_defaults.keys()) != set(feature_names):
+        if ("static_defaults" not in st.session_state
+                or set(st.session_state.static_defaults.keys()) != set(feature_names)):
             st.session_state.static_defaults = {
-                feat: float(medians.get(feat, 50.0)) for feat in feature_names
+                feat: get_median(feat, medians) for feat in feature_names
             }
 
         st.markdown("Enter the feature values:")
@@ -367,28 +437,47 @@ with tabs[0]:
 
         for i, feat in enumerate(feature_names):
             with cols[i % len(cols)]:
-                default_val = st.session_state.static_defaults.get(feat, 50.0)
-                if feat.lower() == "age":
-                    user_input = st.number_input(
-                        f"🔹 {feat}",
-                        value=int(default_val),
-                        step=1,
-                        format="%d",
-                        key=f"input_{feat}_{i}"
+                kind = infer_kind(feat)
+                med = st.session_state.static_defaults.get(feat, get_median(feat, medians))
+
+                # ---- Boolean (Menopause) : 0/1 dropdown ----
+                if kind == "boolean":
+                    user_input = st.selectbox(
+                        f"🔹 {feat}  (0 = No, 1 = Yes)",
+                        options=[0, 1],
+                        index=int(med) if int(med) in (0, 1) else 0,
+                        key=f"input_{feat}_{i}",
                     )
+                # ---- Int / Float : NO min_value / max_value ----
                 else:
+                    step = infer_step(med, kind)
+                    fmt = step_to_format(step, kind)
                     user_input = st.number_input(
                         f"🔹 {feat}",
-                        value=float(default_val),
-                        step=0.1,
-                        format="%.3f",
-                        key=f"input_{feat}_{i}"
+                        value=int(round(med)) if kind == "int" else float(med),
+                        step=step,
+                        format=fmt,
+                        key=f"input_{feat}_{i}",
                     )
+
                 user_vals[feat] = float(user_input)
+
+                if is_outside_observed(feat, float(user_input)):
+                    lo, hi = OBSERVED_RANGE[feat]
+                    st.caption(f"⚠️ Outside observed range ({lo} – {hi})")
 
         if st.button("Predict", type="primary"):
             try:
                 clean_vals = {k: float(v) for k, v in user_vals.items()}
+
+                # Soft advisory only — does NOT block
+                out_of_range = [k for k, v in clean_vals.items() if is_outside_observed(k, v)]
+                if out_of_range:
+                    st.warning(
+                        "Values outside the observed training range "
+                        "(model will still score them; interpret with caution):\n\n- "
+                        + "\n- ".join(out_of_range)
+                    )
 
                 # Align with scaler
                 if scaler and hasattr(scaler, 'feature_names_in_'):
@@ -418,9 +507,9 @@ with tabs[0]:
                 risk_colors = {"Low Risk": "#4CAF50", "Moderate Risk": "#FFEB3B", "High Risk": "#F44336"}
                 color = risk_colors.get(risk_label, "#000000")
                 st.markdown(f"""
-                <div style="padding:20px; border-radius:10px; background-color:{color}; 
-                            color:{'white' if risk_label=='High Risk' else 'black'}; 
-                            font-size:28px; font-weight:bold; text-align:center; 
+                <div style="padding:20px; border-radius:10px; background-color:{color};
+                            color:{'white' if risk_label=='High Risk' else 'black'};
+                            font-size:28px; font-weight:bold; text-align:center;
                             box-shadow:2px 2px 12px rgba(0,0,0,0.2); margin-bottom:20px;">
                     {risk_label} ({percent:.2f}%)
                 </div>
@@ -487,6 +576,29 @@ with tabs[1]:
                         else:
                             scaler_features = feature_names
 
+                        # --- Soft batch range warnings ---
+                        range_warnings = []
+                        for col in scaler_features:
+                            if col not in df_batch.columns or col in BOOL_FEATURES:
+                                continue
+                            rng = OBSERVED_RANGE.get(col)
+                            if not rng:
+                                continue
+                            lo, hi = rng
+                            vals = pd.to_numeric(df_batch[col], errors="coerce")
+                            bad = vals[(vals < lo) | (vals > hi)]
+                            if not bad.empty:
+                                range_warnings.append(
+                                    f"{col}: {len(bad)} row(s) outside observed range [{lo}, {hi}] "
+                                    f"(e.g. {bad.head(3).tolist()})"
+                                )
+
+                        if range_warnings:
+                            with st.expander("⚠️ Values outside the observed training range", expanded=False):
+                                for w in range_warnings:
+                                    st.write("- " + w)
+                            st.info("Predictions will still be produced; review flagged rows carefully.")
+
                         X_df = df_batch[scaler_features].copy()
                         X_scaled = scaler.transform(X_df)
                         X_scaled_df = pd.DataFrame(X_scaled, columns=scaler_features, index=df_batch.index)
@@ -544,7 +656,9 @@ with tabs[2]:
                 "Monocyte Count | MONO#",
                 "Platelets | PLT",
                 "Mean Corpuscular Hemoglobin | MCH",
-                "Hemoglobin | HGB"
+                "Hemoglobin | HGB",
+                "Platelet Distribution Width | PDW",
+                "Eosinophil Percentage | EO%"
             ],
             "color": "#E8FFF3"
         },
@@ -626,6 +740,16 @@ with tabs[2]:
             "Platelets are small blood components that stop bleeding by forming clots. "
             "Platelet count is checked before surgery, during chemotherapy, and when bleeding or clotting problems are suspected. "
             "High platelets may be a sign of inflammation or malignancy risk; low platelets raise bleeding concerns and often trigger further evaluation."
+        ),
+        "Platelet Distribution Width | PDW": (
+            "PDW measures how much platelets vary in size. Normal values are roughly 9–17%. "
+            "Higher PDW suggests increased platelet turnover, which can accompany inflammation, infection, or malignancy. "
+            "PDW is a supportive marker, not diagnostic on its own; it is interpreted alongside platelet count and clinical context."
+        ),
+        "Eosinophil Percentage | EO%": (
+            "Eosinophils are a small subset of white blood cells (usually <5% of the differential). "
+            "They rise in allergic reactions and parasitic infections, and fall with stress, corticosteroids, or acute infection. "
+            "Extremely elevated EO% (well above 7–10%) is unusual and warrants evaluation for allergy, parasitosis, or hematologic disorders."
         ),
         "Mean Corpuscular Hemoglobin | MCH": (
             "MCH estimates the average hemoglobin per red blood cell and helps classify types of anemia. "
