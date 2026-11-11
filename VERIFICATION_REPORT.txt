@@ -1,0 +1,38 @@
+OvaPredict AI - GitHub Code Verification Report
+=============================================
+
+Model bundled:
+  models/simulated_federated_v4_research_bundle.pkl
+  Trained on the ovarian-cancer development set for a research-only virtual-client simulation.
+  Uses 49 original input features, 25 selected features and the saved standardized threshold.
+  The bundle's SHA-256 checksum is checked before loading.
+
+Changes:
+  - Removed the legacy user-uploadable model/scaler route.
+  - Loads the real saved imputer, winsor clipping limits, feature selection, scaler, RFF map,
+    federated weights/bias, margin standardization and decision threshold as one artifact.
+  - Removes the uncalibrated sigmoid-as-probability and Low/Moderate/High Risk labels.
+  - Provides Benign/Malignant model class and standardized decision score, not probability.
+  - Preserves single and batch inference, per-input feature reference and PDF/CSV downloads.
+  - Preserves old models/scalers/data in legacy_reference/ for traceability, unused in predictions.
+  - Adds validation for 49 raw fields, including the optional missing CA72-4 measurement.
+
+Checks performed in this sandbox:
+  1. Syntax compilation of app.py and research_inference.py: PASS
+  2. Eight automated tests (model schema, golden regression, input column order,
+     CA72 missing, required-column check, invalid values, CSV batch, PDF): PASS
+  3. Prediction parity against the Kaggle v4_federated_inference.py on synthetic inputs:
+     PASS to 1e-12 on both binary classes and standardized decision margins.
+  4. Streamlit interface control-flow smoke test with a lightweight mock: PASS.
+
+Execution limitations:
+  - Streamlit was not installed in this sandbox and package download was unavailable.
+    A real Streamlit browser launch and actual screenshot were NOT possible here.
+  - Sandbox scikit-learn is 1.8.0; the original model was trained under 1.6.1.
+    Local tests required an imputer-attribute compatibility shim, solely in the test harness.
+    Deployment requirements pin scikit-learn==1.6.1. The production inference code
+    does NOT apply the shim.
+  - Before using in the manuscript, deploy/restart the app on Streamlit Community Cloud,
+    run a sample prediction and batch input, then take an actual screenshot for Figure 22.
+
+Not a clinically validated system. Research prototype only.

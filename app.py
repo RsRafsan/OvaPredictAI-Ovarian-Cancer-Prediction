@@ -1,17 +1,14 @@
-import os
+"""OvaPredict AI Streamlit research prototype; V7 inference-bundle aligned."""
+from pathlib import Path
 import io
-import pickle
-import random
-from typing import List, Optional
-import pandas as pd
 import numpy as np
+import pandas as pd
 import streamlit as st
-from sklearn.preprocessing import StandardScaler
-from fpdf import FPDF
+from research_inference import (load_bundle, raw_feature_names, selected_feature_names,
+                                example_defaults, research_federated_predict,
+                                make_report_pdf, validate_raw_data)
 
-# ======================================================================
-# 1. Feature Validation Data
-# ======================================================================
+st.set_page_config(page_title="OvaPredict AI", page_icon="🧬", layout="wide")
 VALIDATION_FEATURES = {
     "Age": {"description": "Older age increases ovarian cancer risk; clinicians consider it when interpreting markers.", "role": "Risk Factor", "link": ""},
     "Menopause": {"description": "Hormone changes after menopause affect marker interpretation; postmenopausal people have higher risk.", "role": "Hormonal", "link": "https://my.clevelandclinic.org/health/diseases/21841-menopause"},
@@ -40,598 +37,129 @@ VALIDATION_FEATURES = {
     "GLU.": {"description": "Glucose shows blood sugar level; high suggests diabetes/stress, low indicates hypoglycemia.", "role": "Metabolic Marker", "link": "https://www.mayocliniclabs.com/test-catalog/overview/89115#clinical-and-interpretive"}
 }
 
-# ======================================================================
-# 1b. Feature metadata — derived from 'All Raw Data'
-#     No widget min/max is enforced; values can exceed the observed range.
-# ======================================================================
-INT_FEATURES  = {"Age", "ALP", "PLT", "AST"}
-BOOL_FEATURES = {"Menopause"}
 
-# Observed training ranges — used ONLY for a soft warning, never as hard limits.
-OBSERVED_RANGE = {
-    "Age":       (15,     83),
-    "HE4":       (16.71,  3537.6),
-    "CA125":     (3.75,   4468),
-    "CA72-4":    (0.2,    158.5),
-    "Menopause": (0,      1),
-    "NEU":       (37.2,   92),
-    "ALB":       (22,     51.5),
-    "LYM%":      (3.9,    51.6),
-    "ALP":       (26,     763),
-    "LYM#":      (0.35,   3.49),
-    "PLT":       (74,     868),
-    "AST":       (7,      78),
-    "PCT":       (0.07,   0.69),
-    "GLO":       (14.1,   47.6),
-    "TBIL":      (2.5,    38.3),
-    "IBIL":      (1.0,    28.4),
-    "HGB":       (61.8,   189),
-    "Ca":        (0.92,   2.83),
-    "MCH":       (17.7,   36.8),
-    "MONO#":     (0.07,   0.97),
-    "Na":        (125.1,  150.7),
-    "DBIL":      (0.9,    12.1),
-    "PDW":       (8.8,    22.8),
-    "GLU.":      (3.57,   12.44),
-    "EO%":       (0.0,    7.6),
-}
+# The existing app's informational feature descriptions are retained below.
 
-def infer_kind(feat: str) -> str:
-    if feat in BOOL_FEATURES: return "boolean"
-    if feat in INT_FEATURES:  return "int"
-    return "float"
-
-def infer_step(median, kind: str) -> float:
-    """Step size derived from the feature's median magnitude."""
-    if kind in ("int", "boolean"):
-        return 1
-    m = abs(float(median)) if pd.notna(median) else 1.0
-    if m < 10:   return 0.01
-    if m < 100:  return 0.1
-    return 1.0
-
-def step_to_format(step: float, kind: str) -> str:
-    if kind == "int":  return "%d"
-    if step >= 1:      return "%.1f"
-    if step >= 0.1:    return "%.1f"
-    if step >= 0.01:   return "%.2f"
-    return "%.3f"
-
-def get_median(feat: str, medians) -> float:
-    """Median from the dataset; if missing, fall back to the observed mid-point."""
-    try:
-        m = medians.get(feat)
-        if m is not None and pd.notna(m):
-            return float(m)
-    except Exception:
-        pass
-    lo, hi = OBSERVED_RANGE.get(feat, (0.0, 1.0))
-    return float((lo + hi) / 2)
-
-def is_outside_observed(feat: str, value: float) -> bool:
-    rng = OBSERVED_RANGE.get(feat)
-    if not rng or feat in BOOL_FEATURES:
-        return False
-    lo, hi = rng
-    return value < lo or value > hi
-
-# ======================================================================
-# 2. Utilities
-# ======================================================================
 @st.cache_resource(show_spinner=False)
-def load_model(model_path: str):
-    with open(model_path, "rb") as f:
-        return pickle.load(f)
+def active_bundle():
+    return load_bundle()
 
-def try_extract_input_feature_names(model) -> Optional[List[str]]:
-    if hasattr(model, "feature_names_in_"):
-        return list(model.feature_names_in_)
-    if hasattr(model, "named_steps"):
-        for s in model.named_steps.values():
-            if hasattr(s, "feature_names_in_"):
-                return list(s.feature_names_in_)
-    return None
-
-def risk_label_from_proba(p_high: float) -> str:
-    if p_high < 0.40:
-        return "Low Risk"
-    elif p_high < 0.70:
-        return "Moderate Risk"
-    else:
-        return "High Risk"
-
-def style_risk(v: str):
-    if v == "Low Risk":
-        return "background-color: #4CAF50; color: white;"
-    elif v == "Moderate Risk":
-        return "background-color: #FFEB3B; color: black;"
-    else:
-        return "background-color: #F44336; color: white;"
-
-def get_feature_display_name(short_name):
-    feature_mapping = {
-        'Age': 'Age',
-        'HE4': 'Human Epididymis Protein 4',
-        'CA125': 'Cancer Antigen 125',
-        'CA72-4': 'Cancer Antigen 72-4',
-        'CEA': 'Carcinoembryonic Antigen',
-        'HGB': 'Hemoglobin',
-        'PLT': 'Platelets',
-        'NEU': 'Neutrophils',
-        'LYM#': 'Lymphocyte Count',
-        'LYM%': 'Lymphocyte Percentage',
-        'MONO#': 'Monocyte Count',
-        'PCT': 'Procalcitonin',
-        'ALB': 'Albumin',
-        'ALP': 'Alkaline Phosphatase',
-        'AST': 'Aspartate Aminotransferase',
-        'TBIL': 'Total Bilirubin',
-        'DBIL': 'Direct Bilirubin',
-        'IBIL': 'Indirect Bilirubin',
-        'TP': 'Total Protein',
-        'GLO': 'Globulin',
-        'Na': 'Sodium',
-        'Ca': 'Calcium',
-        'GLU.': 'Glucose',
-        'MCH': 'Mean Corpuscular Hemoglobin',
-        'Menopause': 'Menopausal Status',
-        'PDW': 'Platelet Distribution Width',
-        'EO%': 'Eosinophil Percentage'
-    }
-    return feature_mapping.get(short_name, short_name)
-
-# ======================================================================
-# 3. SHAP explanation
-# ======================================================================
-def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold=0.02, top_k=8):
-    if shap_values_df is None:
-        return []
-    cols = [c for c in feature_names if c in shap_values_df.columns]
-    if not cols:
-        return []
-    mean_abs = shap_values_df[cols].abs().mean()
-    mean_signed = shap_values_df[cols].mean()
-    strong = mean_abs[mean_abs >= abs_threshold].sort_values(ascending=False)
-    if strong.empty:
-        strong = mean_abs.sort_values(ascending=False).head(min(top_k, len(cols)))
-    table_data = []
-    for feat in strong.index:
-        if mean_signed[feat] > 0:
-            val = float(input_df.iloc[0].get(feat, np.nan))
-            info = VALIDATION_FEATURES.get(feat, {"description": "Clinical monitoring advised.", "role": "General Marker"})
-            table_data.append({
-                "Feature": feat,
-                "Value": f"{val:.2f}",
-                "Risk": "High",
-                "Role": info["role"],
-                "Interpretation": info["description"]
-            })
-    if not table_data:
-        return []
-    df_table = pd.DataFrame(table_data).astype(str)
-    table_html = df_table.to_html(index=False, escape=False)
-    styled_html = f"""
-    <div style='overflow-x:auto;'>
-        <style>
-            table {{ border-collapse: collapse; width: 100%; }}
-            th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; vertical-align: top; }}
-            th {{ background-color: #f2f2f2; font-weight: bold; }}
-        </style>
-        {table_html}
-    </div>
-    """
-    return df_table, styled_html
-
-# ======================================================================
-# 4. PDF generation
-# ======================================================================
-def generate_pdf_report(user_vals, risk_label, percent, df_table=None):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_left_margin(25)
-    pdf.set_right_margin(15)
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "OvaPredict AI - Ovarian Cancer Prediction Report", ln=True, align="C")
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 8, "1. Patient Input Values", ln=True)
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 8)
-    col_widths = [40, 80, 40]
-    pdf.cell(col_widths[0], 6, "Feature", border=1)
-    pdf.cell(col_widths[1], 6, "Full Name", border=1)
-    pdf.cell(col_widths[2], 6, "Value", border=1, align="R")
-    pdf.ln()
-    pdf.set_font("Arial", "", 8)
-    for feature, value in user_vals.items():
-        full_name = get_feature_display_name(feature)
-        full_name_display = full_name[:35] + "..." if len(full_name) > 38 else full_name
-        pdf.cell(col_widths[0], 6, feature, border=1)
-        pdf.cell(col_widths[1], 6, full_name_display, border=1)
-        pdf.cell(col_widths[2], 6, f"{value:.2f}", border=1, align="R")
-        pdf.ln()
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 8, "2. Prediction Result", ln=True)
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 14)
-    if risk_label == "High Risk":
-        pdf.set_text_color(255, 0, 0)
-    elif risk_label == "Moderate Risk":
-        pdf.set_text_color(255, 165, 0)
-    else:
-        pdf.set_text_color(0, 128, 0)
-    pdf.cell(0, 8, f"Risk Assessment: {risk_label} ({percent:.2f}%)", ln=True)
-    pdf.ln(3)
-    if df_table is not None and not df_table.empty:
-        pdf.set_font("Arial", "B", 12)
-        pdf.set_text_color(0, 0, 0)
-        pdf.cell(0, 8, "3. High-Risk Indicators & Clinical Interpretation", ln=True)
-        pdf.ln(3)
-        col_widths = [15, 15, 15, 20, 95]
-        pdf.set_font("Arial", "B", 7)
-        headers = ["Feature", "Value", "Risk", "Role", "Clinical Interpretation"]
-        for i, header in enumerate(headers):
-            pdf.cell(col_widths[i], 6, header, border=1)
-        pdf.ln()
-        pdf.set_font("Arial", "", 7)
-        for _, row in df_table.iterrows():
-            pdf.cell(col_widths[0], 6, str(row["Feature"]), border=1)
-            pdf.cell(col_widths[1], 6, str(row["Value"]), border=1)
-            pdf.cell(col_widths[2], 6, str(row["Risk"]), border=1)
-            pdf.cell(col_widths[3], 6, str(row["Role"]), border=1)
-            facts = str(row["Interpretation"])
-            text_width = col_widths[4] - 2
-            text_height = 3.0
-            words = facts.split()
-            lines = []
-            cur = ""
-            for w in words:
-                test = cur + w + " "
-                if pdf.get_string_width(test) < text_width:
-                    cur = test
-                else:
-                    if cur:
-                        lines.append(cur)
-                    cur = w + " "
-            if cur:
-                lines.append(cur)
-            cell_height = max(6, len(lines) * text_height)
-            x = pdf.get_x()
-            y = pdf.get_y()
-            pdf.cell(col_widths[4], cell_height, "", border=1)
-            pdf.set_xy(x, y)
-            for i, line in enumerate(lines):
-                pdf.set_xy(x, y + i * text_height)
-                pdf.cell(col_widths[4], text_height, line, 0, 0, 'L')
-            pdf.set_xy(x + col_widths[4], y + cell_height)
-            pdf.ln(cell_height - 6)
-    pdf.ln(3)
-    pdf.set_font("Arial", "I", 8)
-    pdf.set_text_color(128, 128, 128)
-    pdf.cell(0, 8, "Generated by OvaPredict AI - For clinical decision support only", ln=True, align="R")
-    return pdf
-
-# ======================================================================
-# 5. Federated SVM Wrapper
-# ======================================================================
-class FederatedSVMWrapper:
-    def __init__(self, model_dict):
-        self.rff_mapper = model_dict['rff_mapper']
-        self.global_w = model_dict['global_w']
-        self.global_b = model_dict['global_b']
-        self.margin_mean = model_dict['training_margin_mean']
-        self.margin_std = model_dict['training_margin_std']
-        self.classes_ = np.array([0, 1])
-        self.feature_names_in_ = np.array(model_dict.get('selected_features', FALLBACK_FEATURE_NAMES))
-
-    def predict_proba(self, X):
-        X_rff = self.rff_mapper.transform(X)
-        raw_margins = np.dot(X_rff, self.global_w) + self.global_b
-        raw_margins = raw_margins.flatten()
-        std_margins = (raw_margins - self.margin_mean) / self.margin_std
-        prob_high = 1 / (1 + np.exp(-std_margins))
-        prob_low = 1 - prob_high
-        return np.column_stack([prob_low, prob_high])
-
-# ======================================================================
-# 6. Global fallback feature list
-# ======================================================================
-FALLBACK_FEATURE_NAMES = [
-    'Age', 'HE4', 'Menopause', 'CA125', 'ALB', 'NEU', 'LYM%', 'ALP',
-    'PLT', 'LYM#', 'AST', 'PCT', 'IBIL', 'TBIL', 'CA72-4', 'GLO',
-    'MONO#', 'HGB', 'Na', 'CEA', 'Ca', 'GLU.', 'DBIL', 'TP', 'MCH'
-]
-
-# ======================================================================
-# 7. Streamlit UI
-# ======================================================================
-st.set_page_config(page_title="OvaPredict AI", layout="wide")
 st.title("OvaPredict AI: Ovarian Cancer Prediction")
+st.caption("Research prototype | Simulated federated RFF-hinge SVM")
+st.info("For research demonstration only. Predictions are experimental model classifications, not a clinical diagnosis or validated risk probability.")
+
+try:
+    bundle = active_bundle()
+    all_features = raw_feature_names(bundle)
+    chosen_features = selected_feature_names(bundle)
+    defaults = example_defaults(bundle)
+except Exception as exc:
+    st.error(f"Unable to load the verified research model: {exc}")
+    st.stop()
 
 with st.sidebar:
-    st.header("Settings")
-    default_model_path = "best_federated_svm_v4.pkl"
-    default_scaler_path = "scaler_hybrid_svm.pkl"
+    st.header("Research Model")
+    st.success("Verified federated SVM bundle loaded")
+    st.caption(f"Inputs: {len(all_features)} original variables | {len(chosen_features)} selected features")
+    st.caption("Simulation: 3 virtual clients; preprocessing fitted on pooled development data")
+    st.caption(f"Standardized margin threshold: {float(bundle['standardized_threshold']):+.6f}")
+    st.divider()
+    st.warning("Do not enter identifiable patient information. No input records are saved by this app.")
+    st.caption("The binary model output is based on a saved decision margin, not an estimated cancer probability.")
 
-    uploaded_model = st.file_uploader("Upload a .pkl model", type=["pkl"])
-    uploaded_scaler = st.file_uploader("Upload a .pkl scaler", type=["pkl"])
+primary = [f for f in chosen_features if f in all_features]
+additional = [f for f in all_features if f not in primary]
 
-    if uploaded_model:
-        with open("uploaded_model.pkl", "wb") as f:
-            f.write(uploaded_model.read())
-        model_path = "uploaded_model.pkl"
-    else:
-        model_path = default_model_path
+def render_feature_inputs(names, prefix):
+    values = {}
+    columns = st.columns(4)
+    for index, feat in enumerate(names):
+        with columns[index % 4]:
+            if feat == 'Menopause':
+                default = int(round(defaults.get(feat, 0)))
+                val = st.selectbox('Menopause (0 = No, 1 = Yes)', [0, 1], index=max(0, min(1, default)), key=f'{prefix}_{feat}')
+            else:
+                med = defaults.get(feat, float('nan'))
+                if not np.isfinite(med):
+                    med = 0.0
+                if feat == 'Age':
+                    val = st.number_input(feat, value=float(round(med)), step=1.0, format='%.0f', key=f'{prefix}_{feat}')
+                else:
+                    val = st.number_input(feat, value=float(med), step=0.01, format='%.3f', key=f'{prefix}_{feat}')
+            values[feat] = float(val)
+    return values
 
-    try:
-        raw_model = load_model(model_path)
-        if isinstance(raw_model, list):
-            raw_model = raw_model[0]
-        if isinstance(raw_model, dict) and 'rff_mapper' in raw_model:
-            model_obj = FederatedSVMWrapper(raw_model)
-        else:
-            model_obj = raw_model
-        st.success(f"Loaded model: {os.path.basename(model_path)}")
-    except Exception as e:
-        model_obj = None
-        st.error(f"Could not load model: {e}")
+def display_prediction(prediction):
+    row = prediction.iloc[0]
+    st.divider()
+    a,b,c = st.columns(3)
+    a.metric('Model classification', str(row['Model Class']))
+    b.metric('Standardized decision score', f"{float(row['Standardized Decision Score']):+.4f}")
+    c.metric('Decision threshold', f"{float(row['Decision Threshold']):+.4f}")
+    st.caption('Class 1 = malignant, Class 0 = benign. Score is a standardized SVM decision margin (not a probability).')
+    st.info('Research-only output. No clinically validated low/moderate/high risk bands are assigned.')
 
-    if uploaded_scaler:
-        with open("uploaded_scaler.pkl", "wb") as f:
-            f.write(uploaded_scaler.read())
-        with open("uploaded_scaler.pkl", "rb") as f:
-            scaler = pickle.load(f)
-    else:
-        try:
-            with open(default_scaler_path, "rb") as f:
-                scaler = pickle.load(f)
-            st.success("Scaler loaded")
-        except Exception:
-            scaler = None
-            st.warning("No scaler found. Upload scaler_hybrid_svm.pkl")
-
-# Load dataset medians & SHAP
-try:
-    df_medians = pd.read_csv("selected_features_data.csv")
-    medians = df_medians.median(numeric_only=True)
-except Exception:
-    medians = {}
-
-try:
-    shap_values_df = pd.read_csv("shap_values.csv")
-    st.sidebar.success("Loaded SHAP values")
-except Exception:
-    shap_values_df = None
-    st.sidebar.warning("No shap_values.csv found. Risk indicators limited.")
-
-# ======================================================================
-# 8. Tabs
-# ======================================================================
-tabs = st.tabs(["Single Prediction", "Batch Prediction", "Clinical & Interpretive"])
-
-# -----------------------------
-# Tab 1: Single Prediction
-# -----------------------------
+tabs = st.tabs(['Single Prediction', 'Batch Prediction', 'Feature Reference'])
 with tabs[0]:
-    st.subheader("Single Prediction")
-    if model_obj is None:
-        st.info("Load a model from the sidebar to begin.")
-    else:
-        feature_names = try_extract_input_feature_names(model_obj)
-        if feature_names is None and hasattr(model_obj, 'feature_names_in_') and model_obj.feature_names_in_ is not None:
-            feature_names = list(model_obj.feature_names_in_)
-        if feature_names is None:
-            feature_names = FALLBACK_FEATURE_NAMES
+    st.subheader('Single Prediction')
+    st.caption('Training-set medians are prefilled as example values for interface demonstration only. Replace them with complete measurements for an individual research record.')
+    with st.form('single_prediction_form'):
+        st.markdown('**Selected model features**')
+        primary_values = render_feature_inputs([f for f in primary if f != 'CA72-4'], 'a')
+        if 'CA72-4' in primary:
+            with st.expander('CA72-4 measurement', expanded=True):
+                ca_missing = st.checkbox('CA72-4 was not measured (use saved iterative imputer)', value=True)
+                ca_value = st.number_input('CA72-4', value=0.0, min_value=0.0, step=0.01, format='%.3f', disabled=ca_missing)
+                primary_values['CA72-4'] = np.nan if ca_missing else float(ca_value)
+        with st.expander(f'Additional source measurements ({len(additional)})', expanded=False):
+            st.caption('The saved imputer was fitted using all 49 original predictors. These additional measurements are part of the original preprocessing pipeline, even though the final classifier selects 25 features.')
+            other_values = render_feature_inputs(additional, 'b')
+        submitted = st.form_submit_button('Predict', type='primary')
+    if submitted:
+        try:
+            user_vals = {**primary_values, **other_values}
+            df = pd.DataFrame([{f: user_vals[f] for f in all_features}])
+            result = research_federated_predict(df, bundle)
+            st.session_state['last_single_input'] = df
+            st.session_state['last_single_result'] = result
+        except Exception as exc:
+            st.error(f'Prediction failed: {exc}')
+    if 'last_single_result' in st.session_state:
+        display_prediction(st.session_state['last_single_result'])
+        try:
+            report = make_report_pdf(st.session_state['last_single_input'], st.session_state['last_single_result'])
+            st.download_button('Download research report (PDF)', data=report, file_name='OvaPredict_Research_Report.pdf', mime='application/pdf')
+        except Exception as exc:
+            st.error(f'Unable to prepare report: {exc}')
 
-        if ("static_defaults" not in st.session_state
-                or set(st.session_state.static_defaults.keys()) != set(feature_names)):
-            st.session_state.static_defaults = {
-                feat: get_median(feat, medians) for feat in feature_names
-            }
-
-        st.markdown("Enter the feature values:")
-        cols = st.columns(min(4, len(feature_names)))
-        user_vals = {}
-
-        for i, feat in enumerate(feature_names):
-            with cols[i % len(cols)]:
-                kind = infer_kind(feat)
-                med = st.session_state.static_defaults.get(feat, get_median(feat, medians))
-
-                # ---- Boolean (Menopause) : 0/1 dropdown ----
-                if kind == "boolean":
-                    user_input = st.selectbox(
-                        f"🔹 {feat}  (0 = No, 1 = Yes)",
-                        options=[0, 1],
-                        index=int(med) if int(med) in (0, 1) else 0,
-                        key=f"input_{feat}_{i}",
-                    )
-                # ---- Int / Float : NO min_value / max_value ----
-                else:
-                    step = infer_step(med, kind)
-                    fmt = step_to_format(step, kind)
-                    user_input = st.number_input(
-                        f"🔹 {feat}",
-                        value=int(round(med)) if kind == "int" else float(med),
-                        step=step,
-                        format=fmt,
-                        key=f"input_{feat}_{i}",
-                    )
-
-                user_vals[feat] = float(user_input)
-
-                if is_outside_observed(feat, float(user_input)):
-                    lo, hi = OBSERVED_RANGE[feat]
-                    st.caption(f"⚠️ Outside observed range ({lo} – {hi})")
-
-        if st.button("Predict", type="primary"):
-            try:
-                clean_vals = {k: float(v) for k, v in user_vals.items()}
-
-                # Soft advisory only — does NOT block
-                out_of_range = [k for k, v in clean_vals.items() if is_outside_observed(k, v)]
-                if out_of_range:
-                    st.warning(
-                        "Values outside the observed training range "
-                        "(model will still score them; interpret with caution):\n\n- "
-                        + "\n- ".join(out_of_range)
-                    )
-
-                # Align with scaler
-                if scaler and hasattr(scaler, 'feature_names_in_'):
-                    scaler_features = list(scaler.feature_names_in_)
-                else:
-                    scaler_features = feature_names
-
-                input_df = pd.DataFrame([clean_vals], columns=scaler_features)
-
-                if scaler:
-                    X_scaled = scaler.transform(input_df)
-                    X_df = pd.DataFrame(X_scaled, columns=scaler_features, index=[0])
-                    if list(X_df.columns) != list(feature_names):
-                        X_df = X_df[feature_names]
-                else:
-                    st.warning("Scaler not loaded. Using raw values.")
-                    X_df = input_df
-
-                proba = model_obj.predict_proba(X_df)[0]
-                classes = getattr(model_obj, "classes_", np.array([0, 1]))
-                idx_high = int(np.where(classes == 1)[0][0]) if 1 in classes else 1
-                p_high = float(proba[idx_high])
-
-                risk_label = risk_label_from_proba(p_high)
-                percent = p_high * 100
-
-                risk_colors = {"Low Risk": "#4CAF50", "Moderate Risk": "#FFEB3B", "High Risk": "#F44336"}
-                color = risk_colors.get(risk_label, "#000000")
-                st.markdown(f"""
-                <div style="padding:20px; border-radius:10px; background-color:{color};
-                            color:{'white' if risk_label=='High Risk' else 'black'};
-                            font-size:28px; font-weight:bold; text-align:center;
-                            box-shadow:2px 2px 12px rgba(0,0,0,0.2); margin-bottom:20px;">
-                    {risk_label} ({percent:.2f}%)
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.markdown("### Risk Indicators")
-                df_table = None
-                if risk_label == "Low Risk":
-                    st.markdown("✅ All features are within normal range.")
-                else:
-                    result = explain_with_shap(input_df, shap_values_df, feature_names)
-                    if result and len(result) == 2:
-                        df_table, table_html = result
-                        if df_table is not None and not df_table.empty:
-                            st.markdown(table_html, unsafe_allow_html=True)
-
-                st.markdown("### Download Complete Report")
-                pdf = generate_pdf_report(user_vals, risk_label, percent, df_table)
-                pdf_buffer = io.BytesIO()
-                pdf.output(pdf_buffer)
-                pdf_buffer.seek(0)
-                st.download_button(
-                    label="Download Full Report (PDF)",
-                    data=pdf_buffer,
-                    file_name="OvaPredict_Report.pdf",
-                    mime="application/pdf",
-                    type="primary"
-                )
-
-                if df_table is not None and not df_table.empty:
-                    csv_buf = io.StringIO()
-                    df_table.to_csv(csv_buf, index=False)
-                    st.download_button(
-                        label="Download High-Risk Indicators (CSV)",
-                        data=csv_buf.getvalue(),
-                        file_name="high_risk_indicators.csv",
-                        mime="text/csv"
-                    )
-
-            except Exception as e:
-                st.error(f"Prediction failed: {e}")
-
-# -----------------------------
-# Tab 2: Batch Prediction
-# -----------------------------
 with tabs[1]:
-    st.subheader("Batch Prediction")
-    if model_obj is None:
-        st.info("Load a model first.")
-    else:
-        batch_file = st.file_uploader("Upload CSV", type=["csv"], key="batch")
-        if batch_file:
+    st.subheader('Batch Prediction')
+    st.caption('Provide one row per record with the 49 original input column names. CA72-4 values can be empty for imputation. Other missing values use the fitted development-set imputer.')
+    example = pd.DataFrame([{f: defaults[f] for f in all_features}])
+    st.download_button('Download CSV template (demonstration medians)', data=example.to_csv(index=False).encode('utf-8'), file_name='OvaPredict_Batch_Template.csv', mime='text/csv')
+    batch_file = st.file_uploader('Upload research data (CSV)', type=['csv'], key='batch_file')
+    if batch_file is not None:
+        try:
             df_batch = pd.read_csv(batch_file)
-            st.write("Preview:", df_batch.head())
+            st.caption(f'Records loaded: {len(df_batch)}')
+            st.dataframe(df_batch.head(), use_container_width=True)
+            checked = validate_raw_data(df_batch, bundle)
+            if checked.isna().any().any():
+                st.warning('Some measurements are missing. The saved development-fitted imputation rules will be applied; review missingness before interpreting outputs.')
+            if st.button('Predict (Batch)', type='primary'):
+                result = research_federated_predict(df_batch, bundle)
+                export = df_batch.copy()
+                for col in result.columns:
+                    export[col] = result[col].to_numpy()
+                st.success(f'Classified {len(export)} research records.')
+                st.dataframe(export[['Model Class','Class Code','Standardized Decision Score','Decision Threshold']].head(20), use_container_width=True)
+                st.download_button('Download batch predictions (CSV)', data=export.to_csv(index=False).encode('utf-8'), file_name='OvaPredict_Batch_Predictions.csv', mime='text/csv')
+        except Exception as exc:
+            st.error(f'Cannot process batch file: {exc}')
 
-            if st.button("Predict (Batch)"):
-                try:
-                    feature_names = try_extract_input_feature_names(model_obj) or FALLBACK_FEATURE_NAMES
-                    if scaler is None:
-                        st.error("Scaler not loaded!")
-                    else:
-                        if hasattr(scaler, 'feature_names_in_'):
-                            scaler_features = list(scaler.feature_names_in_)
-                        else:
-                            scaler_features = feature_names
-
-                        # --- Soft batch range warnings ---
-                        range_warnings = []
-                        for col in scaler_features:
-                            if col not in df_batch.columns or col in BOOL_FEATURES:
-                                continue
-                            rng = OBSERVED_RANGE.get(col)
-                            if not rng:
-                                continue
-                            lo, hi = rng
-                            vals = pd.to_numeric(df_batch[col], errors="coerce")
-                            bad = vals[(vals < lo) | (vals > hi)]
-                            if not bad.empty:
-                                range_warnings.append(
-                                    f"{col}: {len(bad)} row(s) outside observed range [{lo}, {hi}] "
-                                    f"(e.g. {bad.head(3).tolist()})"
-                                )
-
-                        if range_warnings:
-                            with st.expander("⚠️ Values outside the observed training range", expanded=False):
-                                for w in range_warnings:
-                                    st.write("- " + w)
-                            st.info("Predictions will still be produced; review flagged rows carefully.")
-
-                        X_df = df_batch[scaler_features].copy()
-                        X_scaled = scaler.transform(X_df)
-                        X_scaled_df = pd.DataFrame(X_scaled, columns=scaler_features, index=df_batch.index)
-                        if list(X_scaled_df.columns) != list(feature_names):
-                            X_scaled_df = X_scaled_df[feature_names]
-
-                        proba = model_obj.predict_proba(X_scaled_df)
-                        classes = getattr(model_obj, "classes_", np.array([0, 1]))
-                        idx_high = int(np.where(classes == 1)[0][0]) if 1 in classes else 1
-                        p_high = proba[:, idx_high]
-
-                        result = pd.DataFrame(index=df_batch.index)
-                        result["High Risk (%)"] = (p_high * 100).round(2).astype(str) + "%"
-                        result["Risk Level"] = [risk_label_from_proba(p) for p in p_high]
-
-                        st.success("Batch predictions completed.")
-                        st.dataframe(
-                            result.head(20).style.applymap(lambda v: style_risk(v), subset=["Risk Level"]),
-                            use_container_width=True
-                        )
-
-                        csv_buf = io.StringIO()
-                        result.to_csv(csv_buf, index=False)
-                        st.download_button("📄 Download Batch Predictions (CSV)", csv_buf.getvalue(), "batch_predictions.csv", "text/csv")
-
-                except Exception as e:
-                    st.error(f"Batch prediction failed: {e}")
-
-# -----------------------------
-# Tab 3: Clinical Interpretation
-# -----------------------------
 with tabs[2]:
-    st.header("Clinical Interpretation Reference")
+    st.header("Feature Reference")
+    st.caption("General information about measured variables. This reference is independent of the federated model decision and is not individual medical advice.")
 
     categories = {
         "Risk Factors": {
